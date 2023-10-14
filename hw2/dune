@@ -1,9 +1,11 @@
 (executable
  (name main)
- (libraries unix str))
+ (libraries unix str num)
+ (modules int64_overflow main assert x86 simulator studenttests gradedtests))
+(include_subdirs unqualified)
 
 (env
 (dev
 (flags (:standard -warn-error -A -no-strict-formats))))
 
-(include_subdirs unqualified)
+

@@ -207,7 +207,19 @@ let get_from_mem (m : mach) (addr : quad) : quad =
   in
   int64_of_sbytes int64_sbytes
 
-let interpret_operand (m : mach) (op : operand) : quad =
+let store_in_mem (m : mach) (addr : quad) (v : quad) : unit =
+  let add = int_map_addr addr in
+  let sbytes = sbytes_of_int64 v in
+  m.mem.(add) <- List.nth sbytes 0;
+  m.mem.(add + 1) <- List.nth sbytes 1;
+  m.mem.(add + 2) <- List.nth sbytes 2;
+  m.mem.(add + 3) <- List.nth sbytes 3;
+  m.mem.(add + 4) <- List.nth sbytes 4;
+  m.mem.(add + 5) <- List.nth sbytes 5;
+  m.mem.(add + 6) <- List.nth sbytes 6;
+  m.mem.(add + 7) <- List.nth sbytes 7
+
+let src_operand (m : mach) (op : operand) : quad =
   match op with
   | Imm im -> imm_to_quad im
   | Reg reg -> m.regs.(rind reg)
@@ -216,18 +228,114 @@ let interpret_operand (m : mach) (op : operand) : quad =
   | Ind3 (im, reg) ->
       get_from_mem m (Int64.add m.regs.(rind reg) (imm_to_quad im))
 
-let arith_ins (m : mach) (i : ins) : unit = ()
-let logic_ins (m : mach) (i : ins) : unit = ()
-let bitop_ins (m : mach) (i : ins) : unit = ()
-let cflow_ins (m : mach) (i : ins) : unit = ()
-let datam_ins (m : mach) (i : ins) : unit = ()
+let dst_operand (m : mach) (op : operand) (v : quad) : unit =
+  match op with
+  | Imm _ -> failwith "Cannot store data in an immediate value"
+  | Reg reg -> m.regs.(rind reg) <- v
+  | Ind1 im -> store_in_mem m (imm_to_quad im) v
+  | Ind2 reg -> store_in_mem m m.regs.(rind reg) v
+  | Ind3 (im, reg) ->
+      store_in_mem m (Int64.add m.regs.(rind reg) (imm_to_quad im)) v
+
+open Int64_overflow
+let get_op_1 (i : ins) : quad -> t =
+  match i with
+  | Incq, _ -> succ
+  | Decq, _ -> pred
+  | Negq, _ -> neg
+  | _ -> failwith "Instruction is not equivalent to unary op"
+
+let get_op_2 (i : ins) : quad -> quad -> t =
+  match i with
+  | Addq, _ -> add
+  | Subq, _ -> sub
+  | Imulq, _ -> mul
+  | _ -> failwith "Instruction is not equivalent to binary op"
+
+let get_log_op (i: ins) = 
+  match i with
+  | Shlq, _ -> Int64.shift_left
+  | Shrq, _ -> Int64.shift_right_logical
+  | Sarq, _ -> Int64.shift_right
+  | _ -> failwith "Invalid instruction"
+
+let set_flags (m: mach) (res: t) : unit = 
+  m.flags.fo <- res.overflow;  
+  m.flags.fz <- res.value = 0L;
+  m.flags.fs <- Int64.shift_right_logical res.value 63 = 1L
+
+let handle_outcome (m: mach) (res: t) (dst_op: operand) : unit =
+    set_flags m res; dst_operand m dst_op res.value
+  
+let arith_ins (m : mach) (i : ins) : unit =
+  match i with 
+  | (Addq | Subq | Imulq), [ op1; op2 ] -> 
+    handle_outcome m ((get_op_2 i) (src_operand m op1) (src_operand m op2)) op2 
+  | (Negq | Incq | Decq), [op] -> 
+    handle_outcome m ((get_op_1 i) (src_operand m op)) op
+  | _ -> failwith "Non-arithmetic Operation" 
+
+let logic_ins (m : mach) (i : ins) : unit = 
+  match i with
+  | Xorq, [op1; op2] -> 
+    handle_outcome m 
+    {value = Int64.logxor (src_operand m op1) (src_operand m op2); overflow = false} op2
+  | Orq, [op1; op2] -> 
+    handle_outcome m 
+    {value = Int64.logor (src_operand m op1) (src_operand m op2); overflow = false} op2
+  | Andq, [op1; op2] -> 
+    handle_outcome m 
+    {value = Int64.logand (src_operand m op1) (src_operand m op2); overflow = false} op2
+  | Notq, [op] ->  
+    (** Different handling not to set the flags here *)
+    dst_operand m op (Int64.lognot (src_operand m op))
+  | _ -> failwith "Non-logical Operation"
+
+(** TODO: Have to fix the flags here *)
+let bitop_ins (m : mach) (i : ins) : unit =
+  match i with
+  | (Sarq | Shrq | Shlq), [amt; dst] -> 
+    let res = (get_log_op i) (src_operand m amt) (Int64.to_int (src_operand m dst)) in
+    dst_operand m dst res
+  | (Set cc), [dst] -> let res = (src_operand m dst) in
+  if (interp_cnd m.flags cc) then
+    (dst_operand m dst (Int64.logor res 1L))
+  else
+    (dst_operand m dst (Int64.logand res (Int64.lognot 1L)))
+  | _ -> failwith "Non-bitwise operation" 
+
+let push (m: mach) (src: operand) : unit = 
+    m.regs.(rind Rsp) <- Int64.sub m.regs.(rind Rsp) 8L;
+    store_in_mem m m.regs.(rind Rsp) (src_operand m src)
+
+let pop (m: mach) (dst: operand) : unit = 
+    dst_operand m dst (get_from_mem m m.regs.(rind Rsp));
+    m.regs.(rind Rsp) <- Int64.add m.regs.(rind Rsp) 8L
+
+let datam_ins (m : mach) (i : ins) : unit =
+  match i with
+  | Pushq, [ op ] -> push m op
+  | Popq, [ op ] -> pop m op
+  | Movq, [ op1; op2 ] -> dst_operand m op2 (src_operand m op1)
+  | Incq, [ op1; op2 ] -> dst_operand m op2 (get_from_mem m (src_operand m op1))
+  | _ -> failwith "Invalid data manipulation"
+
+let cflow_ins (m : mach) (i : ins) : unit = 
+match i with
+  | Jmp, [src] -> m.regs.(rind Rip) <- src_operand m src
+  | Callq, [src] -> (push m (Reg Rsp)); m.regs.(rind Rip) <- src_operand m src
+  | Retq, [] -> pop m (Reg Rip)
+  | J cc, [src] -> if interp_cnd m.flags cc then m.regs.(rind Rip) <- src_operand m src else ()
+  | Cmpq, [src1; src2] -> let res = sub (src_operand m src1) (src_operand m src2) in set_flags m res
+  | _ -> ()
 
 let handle_instruction (m : mach) (i : ins) : unit =
+  let rip = m.regs.(rind Rip) in
   match i with
-  | (Addq | Subq | Imulq | Negq | Incq | Decq), _ -> arith_ins m i
-  | (Xorq | Orq | Andq | Notq), _ -> logic_ins m i
-  | (Shlq | Sarq | Shrq | Set _), _ -> bitop_ins m i
-  | (Leaq | Movq | Pushq | Popq), _ -> datam_ins m i
+  | (Addq | Subq | Imulq | Negq | Incq | Decq), _ -> arith_ins m i; m.regs.(rind Rip) <- Int64.add rip 1L
+  | (Xorq | Orq | Andq | Notq), _ -> logic_ins m i; m.regs.(rind Rip) <- Int64.add rip 1L
+  | (Shlq | Sarq | Shrq | Set _), _ -> bitop_ins m i; m.regs.(rind Rip) <- Int64.add rip 1L
+  | (Leaq | Movq | Pushq | Popq), _ -> datam_ins m i; m.regs.(rind Rip) <- Int64.add rip 1L
   | (Jmp | Callq | Retq | J _ | Cmpq), _ -> cflow_ins m i
 
 let step (m : mach) : unit =
@@ -235,7 +343,7 @@ let step (m : mach) : unit =
   let inst = m.mem.(int_map_addr rip) in
   match inst with
   | Byte _ | InsFrag -> m.regs.(rind Rip) <- Int64.add rip 1L
-  | InsB0 i -> handle_instruction m i
+  | InsB0 i -> handle_instruction m i 
 
 (* Runs the machine until the rip register reaches a designated
    memory address. Returns the contents of %rax when the
