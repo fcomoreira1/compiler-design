@@ -385,7 +385,149 @@ exception Redefined_sym of lbl
 
    HINT: List.fold_left and List.fold_right are your friends.
 *)
-let assemble (p : prog) : exec = failwith "assemble unimplemented"
+
+
+(* returns the adress of a lbl*)
+let replace_lbl (l:lbl) (sym: 'a list) : int64 =
+        if List.mem_assoc l sym then
+                List.assoc l sym
+        else
+                failwith "Undefined_sym"
+
+
+(* replaces all lbl in the data file with the corresponding lbl in the symbol table *)
+let replace_data (p:prog)(sym:'a list) : sbyte list=
+        let replace (sbyte:sbyte list)(e:elem):sbyte list = 
+        begin match e.asm with
+        |Data d_list ->
+                        begin match d_list with
+                        |h::tl -> begin match h with
+                                |Quad (Lbl y) -> (sbytes_of_int64 (replace_lbl y sym))@sbyte
+                                |_ -> (sbytes_of_data h)@sbyte
+                                end
+                        |[]->sbyte
+                        end
+        |_->sbyte
+        end
+        in List.fold_left replace [] p
+
+
+(* splits a program into text and data elem*)
+let split (p:prog) : elem list * elem list =
+        let is_text (e:elem) : bool =
+                begin match e.asm with
+                |Text _ -> true
+                | _ -> false
+                end
+        in
+        List.partition is_text p
+
+
+let op_part (a : ins ) : 'a list =
+        begin match a with
+        |(_,op_list) -> op_list
+        end
+
+
+
+
+(* Goes through all operands and replaces lbl with the corresponding value in symbol table*)
+let rec operand_find (o: 'a list) (sym:'b list) : 'c list =
+        begin match o with
+        |[]->[]
+        |(h::tl) -> begin match h with
+                |Imm(Lbl y) |Ind1(Lbl y)-> (Imm(Lit (replace_lbl y sym))::(operand_find tl sym))
+                |Ind3(Lbl y,reg) ->(Imm(Lit (replace_lbl y sym))::(operand_find tl sym))
+                |_ -> h::(operand_find tl sym)
+        end
+end
+
+
+(* Goes through ins list and sends each operand to operand_find to replace Lbl*)
+let rec ins_list (i:'a list) (sym: 'b list):'c list =
+                        begin match i with
+                        |h::tl -> let opc = fst h in
+                                        let op_list = operand_find (op_part h) sym in
+                                                (opc,op_list)::(ins_list tl sym)
+                        |[]->[]
+                        end
+(*Sends each text elem to replace Lbl *)
+let conv_text (e:elem)(sym: 'a list) : 'b list =
+                begin match e.asm with
+                |Text (i_list) -> ins_list i_list sym
+                |Data _ -> []
+                end
+
+
+                                
+(*Goes through a program and sends it to replace lbl*)
+let rec prog_traversal (p:prog) (sym: 'a list) : 'b list =
+        begin match p with
+        |h::tl -> (conv_text h sym)::(prog_traversal tl sym)
+        |[]->[]
+        end
+
+let rec sbytes_of_ins_list (i:'a list) :'b list =
+               begin match i with
+                |h::tl -> (sbytes_of_ins h)@(sbytes_of_ins_list tl)
+                |[]-> []
+               end 
+
+                (* find data_pos *)
+let data_start (p:prog) : int =
+        let rec data_acc p1 acc =
+                begin match p1 with
+                |h::tl -> begin match h.asm with
+                        |Text x -> data_acc tl (acc+(List.length x)*8)
+                        |Data _ -> failwith "Undefined_sym"
+                end
+                |[]-> acc
+                end
+        in data_acc p 0x400000
+
+                
+(*Calculates the next available adress*)
+
+let calc_next_addr (e: elem)(a: int64): int =
+        begin match e.asm  with
+        |Text x -> (List.length x )*8+Int64.to_int a
+        |Data x -> let rec data_length acc k  =
+                begin match k with
+                |[] -> acc
+                |Asciz y:: tl -> data_length (acc+String.length y +1) tl
+                |Quad y::tl  -> data_length (acc+8) tl
+                end
+        in
+        data_length 0 x + Int64.to_int a
+        end
+
+(* Creates the symbol table which can be used to resolve the labels*) 
+let lbl_res (p: prog) : 'a list  =
+        let address = mem_bot in
+        let rec res p1 acc address=
+                begin match p1 with 
+                |[]-> if List.mem_assoc "main" acc then acc 
+                else 
+                        failwith "Undefined_sym"
+                |h::tl -> if List.mem_assoc h.lbl acc then
+                        failwith "Redefined_sym"
+                else 
+                        res (tl) (((h.lbl,address)::acc)) (Int64.of_int (calc_next_addr h address)) 
+                end
+        in res p [] address
+
+
+let assemble (p : prog) : exec =
+
+        let (t_file,d_file) = split p in (* split program into text elements and data elements*)
+        if t_file= [] then failwith "Undefined_sym" (*if text is empty there is no main*)
+        else
+        let d_p = Int64.of_int (data_start t_file) in (* data_pos by calculating length of text_seg*)
+        let t_p = mem_bot in    (*text_pos*)
+        let e = Int64.add t_p 8L in     (*entry*)
+        let sym_table = lbl_res (t_file@d_file) in (*creat the symbol table*)
+        let t_s = List.flatten(prog_traversal t_file sym_table) in
+         {entry = e;text_pos = t_p;data_pos=d_p;text_seg=(sbytes_of_ins_list t_s);data_seg=replace_data d_file sym_table}
 
 (* Convert an object file into an executable machine state.
      - allocate the mem array
@@ -400,5 +542,12 @@ let assemble (p : prog) : exec = failwith "assemble unimplemented"
    Hint: The Array.make, Array.blit, and Array.of_list library functions
    may be of use.
 *)
+
+(* TO DO fill the mem_array with text_seg and data_seg*)
 let load { entry; text_pos; data_pos; text_seg; data_seg } : mach =
-  failwith "load unimplemented"
+        let cnd_flags= {fo = false; fs = false;fz = false}in
+        let mem_array = Array.make mem_size (Byte '\x00') in
+        let regs = Array.make nregs 0L in
+        regs.(rind Rip) <- entry;
+        regs.(rind Rsp) <- Int64.sub mem_top 8L;
+        { flags = cnd_flags; regs = regs; mem = mem_array }
