@@ -238,6 +238,7 @@ let dst_operand (m : mach) (op : operand) (v : quad) : unit =
       store_in_mem m (Int64.add m.regs.(rind reg) (imm_to_quad im)) v
 
 open Int64_overflow
+
 let get_op_1 (i : ins) : quad -> t =
   match i with
   | Incq, _ -> succ
@@ -252,65 +253,80 @@ let get_op_2 (i : ins) : quad -> quad -> t =
   | Imulq, _ -> mul
   | _ -> failwith "Instruction is not equivalent to binary op"
 
-let get_log_op (i: ins) = 
+let get_log_op (i : ins) =
   match i with
   | Shlq, _ -> Int64.shift_left
   | Shrq, _ -> Int64.shift_right_logical
   | Sarq, _ -> Int64.shift_right
   | _ -> failwith "Invalid instruction"
 
-let set_flags (m: mach) (res: t) : unit = 
-  m.flags.fo <- res.overflow;  
+let set_flags (m : mach) (res : t) : unit =
+  m.flags.fo <- res.overflow;
   m.flags.fz <- res.value = 0L;
   m.flags.fs <- Int64.shift_right_logical res.value 63 = 1L
 
-let handle_outcome (m: mach) (res: t) (dst_op: operand) : unit =
-    set_flags m res; dst_operand m dst_op res.value
-  
-let arith_ins (m : mach) (i : ins) : unit =
-  match i with 
-  | (Addq | Subq | Imulq), [ op1; op2 ] -> 
-    handle_outcome m ((get_op_2 i) (src_operand m op1) (src_operand m op2)) op2 
-  | (Negq | Incq | Decq), [op] -> 
-    handle_outcome m ((get_op_1 i) (src_operand m op)) op
-  | _ -> failwith "Non-arithmetic Operation" 
+let handle_outcome (m : mach) (res : t) (dst_op : operand) : unit =
+  set_flags m res;
+  dst_operand m dst_op res.value
 
-let logic_ins (m : mach) (i : ins) : unit = 
+let arith_ins (m : mach) (i : ins) : unit =
   match i with
-  | Xorq, [op1; op2] -> 
-    handle_outcome m 
-    {value = Int64.logxor (src_operand m op1) (src_operand m op2); overflow = false} op2
-  | Orq, [op1; op2] -> 
-    handle_outcome m 
-    {value = Int64.logor (src_operand m op1) (src_operand m op2); overflow = false} op2
-  | Andq, [op1; op2] -> 
-    handle_outcome m 
-    {value = Int64.logand (src_operand m op1) (src_operand m op2); overflow = false} op2
-  | Notq, [op] ->  
-    (** Different handling not to set the flags here *)
-    dst_operand m op (Int64.lognot (src_operand m op))
+  | (Addq | Subq | Imulq), [ op1; op2 ] ->
+      handle_outcome m
+        ((get_op_2 i) (src_operand m op1) (src_operand m op2))
+        op2
+  | (Negq | Incq | Decq), [ op ] ->
+      handle_outcome m ((get_op_1 i) (src_operand m op)) op
+  | _ -> failwith "Non-arithmetic Operation"
+
+(** Different handling not to set the flags here *)
+let logic_ins (m : mach) (i : ins) : unit =
+  match i with
+  | Xorq, [ op1; op2 ] ->
+      handle_outcome m
+        {
+          value = Int64.logxor (src_operand m op1) (src_operand m op2);
+          overflow = false;
+        }
+        op2
+  | Orq, [ op1; op2 ] ->
+      handle_outcome m
+        {
+          value = Int64.logor (src_operand m op1) (src_operand m op2);
+          overflow = false;
+        }
+        op2
+  | Andq, [ op1; op2 ] ->
+      handle_outcome m
+        {
+          value = Int64.logand (src_operand m op1) (src_operand m op2);
+          overflow = false;
+        }
+        op2
+  | Notq, [ op ] -> dst_operand m op (Int64.lognot (src_operand m op))
   | _ -> failwith "Non-logical Operation"
 
 (** TODO: Have to fix the flags here *)
 let bitop_ins (m : mach) (i : ins) : unit =
   match i with
-  | (Sarq | Shrq | Shlq), [amt; dst] -> 
-    let res = (get_log_op i) (src_operand m amt) (Int64.to_int (src_operand m dst)) in
-    dst_operand m dst res
-  | (Set cc), [dst] -> let res = (src_operand m dst) in
-  if (interp_cnd m.flags cc) then
-    (dst_operand m dst (Int64.logor res 1L))
-  else
-    (dst_operand m dst (Int64.logand res (Int64.lognot 1L)))
-  | _ -> failwith "Non-bitwise operation" 
+  | (Sarq | Shrq | Shlq), [ amt; dst ] ->
+      let res =
+        (get_log_op i) (src_operand m amt) (Int64.to_int (src_operand m dst))
+      in
+      dst_operand m dst res
+  | Set cc, [ dst ] ->
+      let res = src_operand m dst in
+      if interp_cnd m.flags cc then dst_operand m dst (Int64.logor res 1L)
+      else dst_operand m dst (Int64.logand res (Int64.lognot 1L))
+  | _ -> failwith "Non-bitwise operation"
 
-let push (m: mach) (src: operand) : unit = 
-    m.regs.(rind Rsp) <- Int64.sub m.regs.(rind Rsp) 8L;
-    store_in_mem m m.regs.(rind Rsp) (src_operand m src)
+let push (m : mach) (src : operand) : unit =
+  m.regs.(rind Rsp) <- Int64.sub m.regs.(rind Rsp) 8L;
+  store_in_mem m m.regs.(rind Rsp) (src_operand m src)
 
-let pop (m: mach) (dst: operand) : unit = 
-    dst_operand m dst (get_from_mem m m.regs.(rind Rsp));
-    m.regs.(rind Rsp) <- Int64.add m.regs.(rind Rsp) 8L
+let pop (m : mach) (dst : operand) : unit =
+  dst_operand m dst (get_from_mem m m.regs.(rind Rsp));
+  m.regs.(rind Rsp) <- Int64.add m.regs.(rind Rsp) 8L
 
 let datam_ins (m : mach) (i : ins) : unit =
   match i with
@@ -320,22 +336,36 @@ let datam_ins (m : mach) (i : ins) : unit =
   | Incq, [ op1; op2 ] -> dst_operand m op2 (get_from_mem m (src_operand m op1))
   | _ -> failwith "Invalid data manipulation"
 
-let cflow_ins (m : mach) (i : ins) : unit = 
-match i with
-  | Jmp, [src] -> m.regs.(rind Rip) <- src_operand m src
-  | Callq, [src] -> (push m (Reg Rsp)); m.regs.(rind Rip) <- src_operand m src
+let cflow_ins (m : mach) (i : ins) : unit =
+  match i with
+  | Jmp, [ src ] -> m.regs.(rind Rip) <- src_operand m src
+  | Callq, [ src ] ->
+      push m (Reg Rsp);
+      m.regs.(rind Rip) <- src_operand m src
   | Retq, [] -> pop m (Reg Rip)
-  | J cc, [src] -> if interp_cnd m.flags cc then m.regs.(rind Rip) <- src_operand m src else ()
-  | Cmpq, [src1; src2] -> let res = sub (src_operand m src1) (src_operand m src2) in set_flags m res
+  | J cc, [ src ] ->
+      if interp_cnd m.flags cc then m.regs.(rind Rip) <- src_operand m src
+      else ()
+  | Cmpq, [ src1; src2 ] ->
+      let res = sub (src_operand m src1) (src_operand m src2) in
+      set_flags m res
   | _ -> ()
 
 let handle_instruction (m : mach) (i : ins) : unit =
   let rip = m.regs.(rind Rip) in
   match i with
-  | (Addq | Subq | Imulq | Negq | Incq | Decq), _ -> arith_ins m i; m.regs.(rind Rip) <- Int64.add rip 1L
-  | (Xorq | Orq | Andq | Notq), _ -> logic_ins m i; m.regs.(rind Rip) <- Int64.add rip 1L
-  | (Shlq | Sarq | Shrq | Set _), _ -> bitop_ins m i; m.regs.(rind Rip) <- Int64.add rip 1L
-  | (Leaq | Movq | Pushq | Popq), _ -> datam_ins m i; m.regs.(rind Rip) <- Int64.add rip 1L
+  | (Addq | Subq | Imulq | Negq | Incq | Decq), _ ->
+      arith_ins m i;
+      m.regs.(rind Rip) <- Int64.add rip 1L
+  | (Xorq | Orq | Andq | Notq), _ ->
+      logic_ins m i;
+      m.regs.(rind Rip) <- Int64.add rip 1L
+  | (Shlq | Sarq | Shrq | Set _), _ ->
+      bitop_ins m i;
+      m.regs.(rind Rip) <- Int64.add rip 1L
+  | (Leaq | Movq | Pushq | Popq), _ ->
+      datam_ins m i;
+      m.regs.(rind Rip) <- Int64.add rip 1L
   | (Jmp | Callq | Retq | J _ | Cmpq), _ -> cflow_ins m i
 
 let step (m : mach) : unit =
@@ -343,7 +373,7 @@ let step (m : mach) : unit =
   let inst = m.mem.(int_map_addr rip) in
   match inst with
   | Byte _ | InsFrag -> m.regs.(rind Rip) <- Int64.add rip 1L
-  | InsB0 i -> handle_instruction m i 
+  | InsB0 i -> handle_instruction m i
 
 (* Runs the machine until the rip register reaches a designated
    memory address. Returns the contents of %rax when the
@@ -386,148 +416,158 @@ exception Redefined_sym of lbl
    HINT: List.fold_left and List.fold_right are your friends.
 *)
 
-
 (* returns the adress of a lbl*)
-let replace_lbl (l:lbl) (sym: 'a list) : int64 =
-        if List.mem_assoc l sym then
-                List.assoc l sym
-        else
-                failwith "Undefined_sym"
-
+let replace_lbl (l : lbl) (sym : 'a list) : int64 =
+  if List.mem_assoc l sym then List.assoc l sym else raise (Undefined_sym "Undefined_sym")
 
 (* replaces all lbl in the data file with the corresponding lbl in the symbol table *)
-let replace_data (p:prog)(sym:'a list) : sbyte list=
-        let replace (sbyte:sbyte list)(e:elem):sbyte list = 
-        begin match e.asm with
-        |Data d_list ->
-                        begin match d_list with
-                        |h::tl -> begin match h with
-                                |Quad (Lbl y) -> (sbytes_of_int64 (replace_lbl y sym))@sbyte
-                                |_ -> (sbytes_of_data h)@sbyte
-                                end
-                        |[]->sbyte
-                        end
-        |_->sbyte
-        end
-        in List.fold_left replace [] p
+let rec replace_aux (d_list: data list) (sym : 'a list) (sbt: sbyte list) : sbyte list = 
+    match d_list with
+    | h :: tl -> (
+        begin match h with
+        | Quad (Lbl y) -> replace_aux tl sym (sbt @ (sbytes_of_int64 (replace_lbl y sym)))
+        | Asciz _ | Quad(Lit _) -> replace_aux tl sym  (sbt @ (sbytes_of_data h))
+        end 
+    ) 
+    | [] -> sbt
 
+
+let replace_data (p : prog) (sym : 'a list) : sbyte list =
+  let replace (sbt : sbyte list) (e : elem) : sbyte list =
+    match e.asm with
+    | Data d_list -> replace_aux d_list sym sbt 
+    | _ -> failwith "Should be Data instead"
+    in
+  List.fold_left replace [] p
 
 (* splits a program into text and data elem*)
-let split (p:prog) : elem list * elem list =
-        let is_text (e:elem) : bool =
-                begin match e.asm with
-                |Text _ -> true
-                | _ -> false
-                end
-        in
-        List.partition is_text p
+let split (p : prog) : elem list * elem list =
+  let is_text (e : elem) : bool =
+    match e.asm with Text _ -> true | _ -> false
+  in
+  List.partition is_text p
 
-
-let op_part (a : ins ) : 'a list =
-        begin match a with
-        |(_,op_list) -> op_list
-        end
-
-
-
+let op_part (a : ins) : 'a list = match a with _, op_list -> op_list
 
 (* Goes through all operands and replaces lbl with the corresponding value in symbol table*)
-let rec operand_find (o: 'a list) (sym:'b list) : 'c list =
-        begin match o with
-        |[]->[]
-        |(h::tl) -> begin match h with
-                |Imm(Lbl y) |Ind1(Lbl y)-> (Imm(Lit (replace_lbl y sym))::(operand_find tl sym))
-                |Ind3(Lbl y,reg) ->(Imm(Lit (replace_lbl y sym))::(operand_find tl sym))
-                |_ -> h::(operand_find tl sym)
-        end
-end
-
+let rec operand_find (o : 'a list) (sym : 'b list) : 'c list =
+  match o with
+  | [] -> []
+  | h :: tl -> (
+      match h with
+      | Imm (Lbl y) ->
+          Imm (Lit (replace_lbl y sym)) :: operand_find tl sym
+      | Ind1 (Lbl y) -> Ind1 (Lit (replace_lbl y sym)) :: operand_find tl sym 
+    | Ind3 (Lbl y, _) ->
+          Imm (Lit (replace_lbl y sym)) :: operand_find tl sym
+      | _ -> h :: operand_find tl sym)
 
 (* Goes through ins list and sends each operand to operand_find to replace Lbl*)
-let rec ins_list (i:'a list) (sym: 'b list):'c list =
-                        begin match i with
-                        |h::tl -> let opc = fst h in
-                                        let op_list = operand_find (op_part h) sym in
-                                                (opc,op_list)::(ins_list tl sym)
-                        |[]->[]
-                        end
+let rec ins_list (i : 'a list) (sym : 'b list) : 'c list =
+  match i with
+  | h :: tl ->
+      let opc = fst h in
+      let op_list = operand_find (op_part h) sym in
+      (opc, op_list) :: ins_list tl sym
+  | [] -> []
+
 (*Sends each text elem to replace Lbl *)
-let conv_text (e:elem)(sym: 'a list) : 'b list =
-                begin match e.asm with
-                |Text (i_list) -> ins_list i_list sym
-                |Data _ -> []
-                end
+let conv_text (e : elem) (sym : 'a list) : 'b list =
+  match e.asm with Text i_list -> ins_list i_list sym | Data _ -> []
 
-
-                                
 (*Goes through a program and sends it to replace lbl*)
-let rec prog_traversal (p:prog) (sym: 'a list) : 'b list =
-        begin match p with
-        |h::tl -> (conv_text h sym)::(prog_traversal tl sym)
-        |[]->[]
-        end
+let rec prog_traversal (p : prog) (sym : 'a list) : 'b list =
+  match p with h :: tl -> conv_text h sym :: prog_traversal tl sym | [] -> []
 
-let rec sbytes_of_ins_list (i:'a list) :'b list =
-               begin match i with
-                |h::tl -> (sbytes_of_ins h)@(sbytes_of_ins_list tl)
-                |[]-> []
-               end 
+let rec sbytes_of_ins_list (i : 'a list) : 'b list =
+  match i with h :: tl -> sbytes_of_ins h @ sbytes_of_ins_list tl | [] -> []
 
-                (* find data_pos *)
-let data_start (p:prog) : int =
-        let rec data_acc p1 acc =
-                begin match p1 with
-                |h::tl -> begin match h.asm with
-                        |Text x -> data_acc tl (acc+(List.length x)*8)
-                        |Data _ -> failwith "Undefined_sym"
-                end
-                |[]-> acc
-                end
-        in data_acc p 0x400000
+(* find data_pos *)
+let data_start (p : prog) : int =
+  let rec data_acc p1 acc =
+    match p1 with
+    | h :: tl -> (
+        match h.asm with
+        | Text x -> data_acc tl (acc + (List.length x * 8))
+        | Data _ -> raise (Undefined_sym "Undefined_sym"))
+    | [] -> acc
+  in
+  data_acc p 0x400000
 
-                
 (*Calculates the next available adress*)
 
-let calc_next_addr (e: elem)(a: int64): int =
-        begin match e.asm  with
-        |Text x -> (List.length x )*8+Int64.to_int a
-        |Data x -> let rec data_length acc k  =
-                begin match k with
-                |[] -> acc
-                |Asciz y:: tl -> data_length (acc+String.length y +1) tl
-                |Quad y::tl  -> data_length (acc+8) tl
-                end
-        in
-        data_length 0 x + Int64.to_int a
-        end
+let calc_next_addr (e : elem) (a : int64) : int =
+  match e.asm with
+  | Text x -> (List.length x * 8) + Int64.to_int a
+  | Data x ->
+      let rec data_length acc k =
+        match k with
+        | [] -> acc
+        | Asciz y :: tl -> data_length (acc + String.length y + 1) tl
+        | Quad y :: tl -> data_length (acc + 8) tl
+      in
+      data_length 0 x + Int64.to_int a
 
-(* Creates the symbol table which can be used to resolve the labels*) 
-let lbl_res (p: prog) : 'a list  =
-        let address = mem_bot in
-        let rec res p1 acc address=
-                begin match p1 with 
-                |[]-> if List.mem_assoc "main" acc then acc 
-                else 
-                        failwith "Undefined_sym"
-                |h::tl -> if List.mem_assoc h.lbl acc then
-                        failwith "Redefined_sym"
-                else 
-                        res (tl) (((h.lbl,address)::acc)) (Int64.of_int (calc_next_addr h address)) 
-                end
-        in res p [] address
+(* Creates the symbol table which can be used to resolve the labels*)
+let lbl_res (p : prog) : 'a list =
+  let address = mem_bot in
+  let rec res p1 acc address =
+    match p1 with
+    | [] -> if List.mem_assoc "main" acc then acc else raise (Undefined_sym "Undefined_sym")
+    | h :: tl ->
+        if List.mem_assoc h.lbl acc then raise (Redefined_sym "Redefined_sym")
+        else
+          res tl ((h.lbl, address) :: acc)
+            (Int64.of_int (calc_next_addr h address))
+  in
+  res p [] address
 
+let rec print_elemlist (l : elem list) : unit =
+  match l with
+  | h :: l1 ->
+      print_endline h.lbl;
+      print_elemlist l1
+  | [] -> ()
+
+let rec print_symboltable (l : (lbl * quad) list) : unit =
+  match l with
+  | (s, i) :: l1 ->
+      print_string (s ^ " -> ");
+      Printf.printf "0x%08x" (Int64.to_int i);
+      print_endline "";
+      print_symboltable l1
+  | [] -> ()
 
 let assemble (p : prog) : exec =
-
-        let (t_file,d_file) = split p in (* split program into text elements and data elements*)
-        if t_file= [] then failwith "Undefined_sym" (*if text is empty there is no main*)
-        else
-        let d_p = Int64.of_int (data_start t_file) in (* data_pos by calculating length of text_seg*)
-        let t_p = mem_bot in    (*text_pos*)
-        let e = Int64.add t_p 8L in     (*entry*)
-        let sym_table = lbl_res (t_file@d_file) in (*creat the symbol table*)
-        let t_s = List.flatten(prog_traversal t_file sym_table) in
-         {entry = e;text_pos = t_p;data_pos=d_p;text_seg=(sbytes_of_ins_list t_s);data_seg=replace_data d_file sym_table}
+  print_endline "A New Test has Began!";
+  let t_file, d_file = split p in
+  (* print_elemlist t_file;
+     print_elemlist d_file; *)
+  (* split program into text elements and data elements*)
+  if t_file = [] then
+    raise (Undefined_sym "Undefined_sym") (*if text is empty there is no main*)
+  else
+    let d_p = Int64.of_int (data_start t_file) in
+    (* data_pos by calculating length of text_seg*)
+    let t_p = mem_bot in
+    (* print_int (Int64.to_int d_p);
+       print_endline "";
+       print_int (Int64.to_int t_p);
+       print_endline ""; *)
+    (*text_pos*)
+    let sym_table = lbl_res (t_file @ d_file) in
+    print_symboltable sym_table;
+    (*entry*)
+    let e = Int64.add t_p 8L in
+    (*creat the symbol table*)
+    let t_s = List.flatten (prog_traversal t_file sym_table) in
+    {
+      entry = e;
+      text_pos = t_p;
+      data_pos = d_p;
+      text_seg = sbytes_of_ins_list t_s;
+      data_seg = replace_data d_file sym_table;
+    }
 
 (* Convert an object file into an executable machine state.
      - allocate the mem array
@@ -545,9 +585,9 @@ let assemble (p : prog) : exec =
 
 (* TO DO fill the mem_array with text_seg and data_seg*)
 let load { entry; text_pos; data_pos; text_seg; data_seg } : mach =
-        let cnd_flags= {fo = false; fs = false;fz = false}in
-        let mem_array = Array.make mem_size (Byte '\x00') in
-        let regs = Array.make nregs 0L in
-        regs.(rind Rip) <- entry;
-        regs.(rind Rsp) <- Int64.sub mem_top 8L;
-        { flags = cnd_flags; regs = regs; mem = mem_array }
+  let cnd_flags = { fo = false; fs = false; fz = false } in
+  let mem_array = Array.make mem_size (Byte '\x00') in
+  let regs = Array.make nregs 0L in
+  regs.(rind Rip) <- entry;
+  regs.(rind Rsp) <- Int64.sub mem_top 8L;
+  { flags = cnd_flags; regs; mem = mem_array }
