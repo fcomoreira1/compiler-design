@@ -219,23 +219,24 @@ let store_in_mem (m : mach) (addr : quad) (v : quad) : unit =
   m.mem.(add + 6) <- List.nth sbytes 6;
   m.mem.(add + 7) <- List.nth sbytes 7
 
+let addr_from_ind (m:mach) (op: operand) : quad = 
+  match op with 
+  | Ind1 im -> imm_to_quad im
+  | Ind2 reg -> m.regs.(rind reg)
+  | Ind3 (im, reg) -> Int64.add (imm_to_quad im) m.regs.(rind reg)
+  | _ -> failwith "Cannot obtain addr from non Ind operand"
+
 let src_operand (m : mach) (op : operand) : quad =
   match op with
   | Imm im -> imm_to_quad im
   | Reg reg -> m.regs.(rind reg)
-  | Ind1 im -> get_from_mem m (imm_to_quad im)
-  | Ind2 reg -> get_from_mem m m.regs.(rind reg)
-  | Ind3 (im, reg) ->
-      get_from_mem m (Int64.add m.regs.(rind reg) (imm_to_quad im))
+  | (Ind1 _| Ind2 _| Ind3 _) -> get_from_mem m (addr_from_ind m op)
 
 let dst_operand (m : mach) (op : operand) (v : quad) : unit =
   match op with
   | Imm _ -> failwith "Cannot store data in an immediate value"
   | Reg reg -> m.regs.(rind reg) <- v
-  | Ind1 im -> store_in_mem m (imm_to_quad im) v
-  | Ind2 reg -> store_in_mem m m.regs.(rind reg) v
-  | Ind3 (im, reg) ->
-      store_in_mem m (Int64.add m.regs.(rind reg) (imm_to_quad im)) v
+  | (Ind1 _| Ind2 _| Ind3 _) -> store_in_mem m (addr_from_ind m op)  v
 
 open Int64_overflow
 
@@ -273,7 +274,7 @@ let arith_ins (m : mach) (i : ins) : unit =
   match i with
   | (Addq | Subq | Imulq), [ op1; op2 ] ->
       handle_outcome m
-        ((get_op_2 i) (src_operand m op1) (src_operand m op2))
+        ((get_op_2 i) (src_operand m op2) (src_operand m op1))
         op2
   | (Negq | Incq | Decq), [ op ] ->
       handle_outcome m ((get_op_1 i) (src_operand m op)) op
@@ -311,7 +312,7 @@ let bitop_ins (m : mach) (i : ins) : unit =
   match i with
   | (Sarq | Shrq | Shlq), [ amt; dst ] ->
       let res =
-        (get_log_op i) (src_operand m amt) (Int64.to_int (src_operand m dst))
+        (get_log_op i) (src_operand m dst) (Int64.to_int (src_operand m amt))
       in
       dst_operand m dst res
   | Set cc, [ dst ] ->
@@ -333,7 +334,7 @@ let datam_ins (m : mach) (i : ins) : unit =
   | Pushq, [ op ] -> push m op
   | Popq, [ op ] -> pop m op
   | Movq, [ op1; op2 ] -> dst_operand m op2 (src_operand m op1)
-  | Incq, [ op1; op2 ] -> dst_operand m op2 (get_from_mem m (src_operand m op1))
+  | Leaq, [ op1; op2 ] -> dst_operand m op2 (addr_from_ind m op1)
   | _ -> failwith "Invalid data manipulation"
 
 let cflow_ins (m : mach) (i : ins) : unit =
@@ -347,7 +348,7 @@ let cflow_ins (m : mach) (i : ins) : unit =
       if interp_cnd m.flags cc then m.regs.(rind Rip) <- src_operand m src
       else ()
   | Cmpq, [ src1; src2 ] ->
-      let res = sub (src_operand m src1) (src_operand m src2) in
+      let res = sub (src_operand m src2) (src_operand m src1) in
       set_flags m res
   | _ -> ()
 
@@ -356,17 +357,20 @@ let handle_instruction (m : mach) (i : ins) : unit =
   match i with
   | (Addq | Subq | Imulq | Negq | Incq | Decq), _ ->
       arith_ins m i;
-      m.regs.(rind Rip) <- Int64.add rip 1L
+      m.regs.(rind Rip) <- Int64.add rip 8L
   | (Xorq | Orq | Andq | Notq), _ ->
       logic_ins m i;
-      m.regs.(rind Rip) <- Int64.add rip 1L
+      m.regs.(rind Rip) <- Int64.add rip 8L
   | (Shlq | Sarq | Shrq | Set _), _ ->
       bitop_ins m i;
-      m.regs.(rind Rip) <- Int64.add rip 1L
+      m.regs.(rind Rip) <- Int64.add rip 8L
   | (Leaq | Movq | Pushq | Popq), _ ->
       datam_ins m i;
-      m.regs.(rind Rip) <- Int64.add rip 1L
-  | (Jmp | Callq | Retq | J _ | Cmpq), _ -> cflow_ins m i
+      m.regs.(rind Rip) <- Int64.add rip 8L
+  | (Jmp | Callq | Retq | J _), _ -> cflow_ins m i
+  | Cmpq, _ ->
+      cflow_ins m i;
+      m.regs.(rind Rip) <- Int64.add rip 8L
 
 let step (m : mach) : unit =
   let rip = m.regs.(rind Rip) in
@@ -418,26 +422,26 @@ exception Redefined_sym of lbl
 
 (* returns the adress of a lbl*)
 let replace_lbl (l : lbl) (sym : 'a list) : int64 =
-  if List.mem_assoc l sym then List.assoc l sym else raise (Undefined_sym "Undefined_sym")
+  if List.mem_assoc l sym then List.assoc l sym
+  else raise (Undefined_sym "Undefined_sym")
 
 (* replaces all lbl in the data file with the corresponding lbl in the symbol table *)
-let rec replace_aux (d_list: data list) (sym : 'a list) (sbt: sbyte list) : sbyte list = 
-    match d_list with
-    | h :: tl -> (
-        begin match h with
-        | Quad (Lbl y) -> replace_aux tl sym (sbt @ (sbytes_of_int64 (replace_lbl y sym)))
-        | Asciz _ | Quad(Lit _) -> replace_aux tl sym  (sbt @ (sbytes_of_data h))
-        end 
-    ) 
-    | [] -> sbt
-
+let rec replace_aux (d_list : data list) (sym : 'a list) (sbt : sbyte list) :
+    sbyte list =
+  match d_list with
+  | h :: tl -> (
+      match h with
+      | Quad (Lbl y) ->
+          replace_aux tl sym (sbt @ sbytes_of_int64 (replace_lbl y sym))
+      | Asciz _ | Quad (Lit _) -> replace_aux tl sym (sbt @ sbytes_of_data h))
+  | [] -> sbt
 
 let replace_data (p : prog) (sym : 'a list) : sbyte list =
   let replace (sbt : sbyte list) (e : elem) : sbyte list =
     match e.asm with
-    | Data d_list -> replace_aux d_list sym sbt 
+    | Data d_list -> replace_aux d_list sym sbt
     | _ -> failwith "Should be Data instead"
-    in
+  in
   List.fold_left replace [] p
 
 (* splits a program into text and data elem*)
@@ -455,11 +459,9 @@ let rec operand_find (o : 'a list) (sym : 'b list) : 'c list =
   | [] -> []
   | h :: tl -> (
       match h with
-      | Imm (Lbl y) ->
-          Imm (Lit (replace_lbl y sym)) :: operand_find tl sym
-      | Ind1 (Lbl y) -> Ind1 (Lit (replace_lbl y sym)) :: operand_find tl sym 
-    | Ind3 (Lbl y, _) ->
-          Imm (Lit (replace_lbl y sym)) :: operand_find tl sym
+      | Imm (Lbl y) -> Imm (Lit (replace_lbl y sym)) :: operand_find tl sym
+      | Ind1 (Lbl y) -> Ind1 (Lit (replace_lbl y sym)) :: operand_find tl sym
+      | Ind3 (Lbl y, _) -> Imm (Lit (replace_lbl y sym)) :: operand_find tl sym
       | _ -> h :: operand_find tl sym)
 
 (* Goes through ins list and sends each operand to operand_find to replace Lbl*)
@@ -513,7 +515,9 @@ let lbl_res (p : prog) : 'a list =
   let address = mem_bot in
   let rec res p1 acc address =
     match p1 with
-    | [] -> if List.mem_assoc "main" acc then acc else raise (Undefined_sym "Undefined_sym")
+    | [] ->
+        if List.mem_assoc "main" acc then acc
+        else raise (Undefined_sym "Undefined_sym")
     | h :: tl ->
         if List.mem_assoc h.lbl acc then raise (Redefined_sym "Redefined_sym")
         else
@@ -544,8 +548,8 @@ let assemble (p : prog) : exec =
   (* print_elemlist t_file;
      print_elemlist d_file; *)
   (* split program into text elements and data elements*)
-  if t_file = [] then
-    raise (Undefined_sym "Undefined_sym") (*if text is empty there is no main*)
+  if t_file = [] then raise (Undefined_sym "Undefined_sym")
+    (*if text is empty there is no main*)
   else
     let d_p = Int64.of_int (data_start t_file) in
     (* data_pos by calculating length of text_seg*)
