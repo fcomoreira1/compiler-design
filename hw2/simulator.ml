@@ -543,7 +543,7 @@ let rec print_symboltable (l : (lbl * quad) list) : unit =
   | [] -> ()
 
 let assemble (p : prog) : exec =
-  print_endline "A New Test has Began!";
+  (*print_endline "A New Test has Began!";*)
   let t_file, d_file = split p in
   (* print_elemlist t_file;
      print_elemlist d_file; *)
@@ -560,9 +560,9 @@ let assemble (p : prog) : exec =
        print_endline ""; *)
     (*text_pos*)
     let sym_table = lbl_res (t_file @ d_file) in
-    print_symboltable sym_table;
+    (*print_symboltable sym_table;*)
     (*entry*)
-    let e = Int64.add t_p 8L in
+    let e = List.assoc "main" sym_table in
     (*creat the symbol table*)
     let t_s = List.flatten (prog_traversal t_file sym_table) in
     {
@@ -572,6 +572,7 @@ let assemble (p : prog) : exec =
       text_seg = sbytes_of_ins_list t_s;
       data_seg = replace_data d_file sym_table;
     }
+
 
 (* Convert an object file into an executable machine state.
      - allocate the mem array
@@ -592,6 +593,11 @@ let load { entry; text_pos; data_pos; text_seg; data_seg } : mach =
   let cnd_flags = { fo = false; fs = false; fz = false } in
   let mem_array = Array.make mem_size (Byte '\x00') in
   let regs = Array.make nregs 0L in
+  Array.blit (Array.of_list text_seg)  0 mem_array 0 (List.length text_seg);
+  Array.blit (Array.of_list data_seg) 0 mem_array (int_map_addr data_pos) (List.length data_seg);
+  let exit = Array.of_list (sbytes_of_int64 exit_addr) in
+  Array.blit exit 0 mem_array (mem_size-8) 8 ;
+
   regs.(rind Rip) <- entry;
   regs.(rind Rsp) <- Int64.sub mem_top 8L;
   { flags = cnd_flags; regs; mem = mem_array }
