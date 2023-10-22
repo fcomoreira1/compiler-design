@@ -1569,3 +1569,4 @@ let tests = andrewme_tests
           (* @ tianwen_tests *) (* Undefined behavior 1/2 tests *)
           @ wangwill_tests
           @ yxeng_tests
+let other_team_tests = Test("OtherTeamTest (Spring2020) (manual)", tests)
