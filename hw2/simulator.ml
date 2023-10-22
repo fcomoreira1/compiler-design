@@ -504,30 +504,30 @@ let rec sbytes_of_ins_list (i : 'a list) : 'b list =
   match i with h :: tl -> sbytes_of_ins h @ sbytes_of_ins_list tl | [] -> []
 
 (* find data_pos *)
-let data_start (p : prog) : int =
+let data_start (p : prog) : int64 =
   let rec data_acc p1 acc =
     match p1 with
     | h :: tl -> (
         match h.asm with
-        | Text x -> data_acc tl (acc + (List.length x * 8))
+        | Text x -> data_acc tl (Int64.add acc (Int64.mul (Int64.of_int (List.length x)) 8L))
         | Data _ -> raise (Undefined_sym "Undefined_sym"))
     | [] -> acc
   in
-  data_acc p 0x400000
+  data_acc p 0x400000L
 
 (*Calculates the next available adress*)
 
-let calc_next_addr (e : elem) (a : int64) : int =
+let calc_next_addr (e : elem) (a : int64) : int64 =
   match e.asm with
-  | Text x -> (List.length x * 8) + Int64.to_int a
+  | Text x -> Int64.add (Int64.mul (Int64.of_int (List.length x)) 8L) a
   | Data x ->
       let rec data_length acc k =
         match k with
         | [] -> acc
-        | Asciz y :: tl -> data_length (acc + String.length y + 1) tl
-        | Quad y :: tl -> data_length (acc + 8) tl
+        | Asciz y :: tl -> data_length (Int64.succ (Int64.add acc (Int64.of_int(String.length y)))) tl
+        | Quad y :: tl -> data_length (Int64.add acc 8L) tl
       in
-      data_length 0 x + Int64.to_int a
+      Int64.add (data_length 0L x) a
 
 (* Creates the symbol table which can be used to resolve the labels*)
 let lbl_res (p : prog) : 'a list =
@@ -541,7 +541,7 @@ let lbl_res (p : prog) : 'a list =
         if List.mem_assoc h.lbl acc then raise (Redefined_sym "Redefined_sym")
         else
           res tl ((h.lbl, address) :: acc)
-            (Int64.of_int (calc_next_addr h address))
+            (calc_next_addr h address)
   in
   res p [] address
 
@@ -570,7 +570,7 @@ let assemble (p : prog) : exec =
   if t_file = [] then raise (Undefined_sym "Undefined_sym")
     (*if text is empty there is no main*)
   else
-    let d_p = Int64.of_int (data_start t_file) in
+    let d_p = data_start t_file in
     (* data_pos by calculating length of text_seg*)
     let t_p = mem_bot in
     (* print_int (Int64.to_int d_p);
