@@ -480,7 +480,7 @@ let rec operand_find (o : 'a list) (sym : 'b list) : 'c list =
       match h with
       | Imm (Lbl y) -> Imm (Lit (replace_lbl y sym)) :: operand_find tl sym
       | Ind1 (Lbl y) -> Ind1 (Lit (replace_lbl y sym)) :: operand_find tl sym
-      | Ind3 (Lbl y, _) -> Imm (Lit (replace_lbl y sym)) :: operand_find tl sym
+      | Ind3 (Lbl y, src) -> Ind3 (Lit (replace_lbl y sym),src) :: operand_find tl sym
       | _ -> h :: operand_find tl sym)
 
 (* Goes through ins list and sends each operand to operand_find to replace Lbl*)
@@ -616,7 +616,6 @@ let load { entry; text_pos; data_pos; text_seg; data_seg } : mach =
     (List.length data_seg);
   let exit = Array.of_list (sbytes_of_int64 exit_addr) in
   Array.blit exit 0 mem_array (mem_size - 8) 8;
-
   regs.(rind Rip) <- entry;
   regs.(rind Rsp) <- Int64.sub mem_top 8L;
-  { flags = cnd_flags; regs; mem = mem_array }
+  { flags = cnd_flags; regs = regs; mem = mem_array }
