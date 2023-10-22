@@ -494,10 +494,10 @@ let calc_next_addr (e : elem) (a : int64) : int64 =
       let rec data_length acc k =
         match k with
         | [] -> acc
-        | Asciz y :: tl -> data_length (acc + String.length y + 1) tl
-        | Quad y :: tl -> data_length (acc + 8) tl
+        | Asciz y :: tl -> data_length (Int64.succ (Int64.add acc (Int64.of_int(String.length y)))) tl
+        | Quad y :: tl -> data_length (Int64.add acc 8L) tl
       in
-      Int64.add (data_length 0 x) a
+      Int64.add (data_length 0L x) a
 
 (* Creates the symbol table which can be used to resolve the labels*)
 let lbl_res (p : prog) : 'a list =
@@ -511,7 +511,7 @@ let lbl_res (p : prog) : 'a list =
         if List.mem_assoc h.lbl acc then raise (Redefined_sym "Redefined_sym")
         else
           res tl ((h.lbl, address) :: acc)
-            (Int64.of_int (calc_next_addr h address))
+            (calc_next_addr h address)
   in
   res p [] address
 
