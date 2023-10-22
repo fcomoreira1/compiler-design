@@ -254,13 +254,6 @@ let get_op_2 (i : ins) : quad -> quad -> t =
   | Imulq, _ -> mul
   | _ -> failwith "Instruction is not equivalent to binary op"
 
-let get_log_op (i : ins) =
-  match i with
-  | Shlq, _ -> Int64.shift_left
-  | Shrq, _ -> Int64.shift_right_logical
-  | Sarq, _ -> Int64.shift_right
-  | _ -> failwith "Invalid instruction"
-
 let set_flags (m : mach) (res : t) : unit =
   m.flags.fo <- res.overflow;
   m.flags.fz <- res.value = 0L;
@@ -308,13 +301,50 @@ let logic_ins (m : mach) (i : ins) : unit =
   | _ -> failwith "Non-logical Operation"
 
 (** TODO: Have to fix the flags here *)
+let get_log_op (i : ins) =
+  match i with
+  | Shlq, _ -> Int64.shift_left
+  | Shrq, _ -> Int64.shift_right_logical
+  | Sarq, _ -> Int64.shift_right
+  | _ -> failwith "Invalid instruction"
+
 let bitop_ins (m : mach) (i : ins) : unit =
   match i with
-  | (Sarq | Shrq | Shlq), [ amt; dst ] ->
-      let res =
-        (get_log_op i) (src_operand m dst) (Int64.to_int (src_operand m amt))
-      in
-      dst_operand m dst res
+  | Sarq, [ amt; dst ] ->
+      let amt_val = src_operand m amt in
+      let res = Int64.shift_right (src_operand m dst) (Int64.to_int amt_val) in
+      dst_operand m dst res;
+      if amt_val <> 0L then (
+        m.flags.fz <- res = 0L;
+        m.flags.fs <- Int64.shift_right_logical res 63 = 1L;
+        if amt_val = 1L then m.flags.fo <- false else ())
+      else ()
+  | Shlq, [amt; dst] ->
+      let srl = Int64.shift_right_logical in
+      let dst_val = src_operand m dst in
+      let amt_val = src_operand m amt in
+      let res = Int64.shift_left dst_val (Int64.to_int amt_val) in
+      dst_operand m dst res;
+      if amt_val <> 0L then (
+        m.flags.fz <- res = 0L;
+        m.flags.fs <- srl res 63 = 1L;
+        if amt_val = 1L then m.flags.fo <- 
+          (srl dst_val 63) <> (Int64.logand (srl dst_val 62) 1L)
+        else ())
+      else ()
+  | Shrq, [ amt; dst ] ->
+      let srl = Int64.shift_right_logical in
+      let dst_val = src_operand m dst in
+      let amt_val = src_operand m amt in
+      let res = srl dst_val (Int64.to_int amt_val) in
+      dst_operand m dst res;
+      if amt_val <> 0L then (
+        m.flags.fz <- res = 0L;
+        m.flags.fs <- srl res 63 = 1L;
+        if amt_val = 1L then m.flags.fo <- 
+          (srl dst_val 63) = 1L 
+        else ())
+      else ()
   | Set cc, [ dst ] ->
       let res = src_operand m dst in
       if interp_cnd m.flags cc then dst_operand m dst (Int64.logor res 1L)
