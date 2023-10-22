@@ -219,8 +219,8 @@ let store_in_mem (m : mach) (addr : quad) (v : quad) : unit =
   m.mem.(add + 6) <- List.nth sbytes 6;
   m.mem.(add + 7) <- List.nth sbytes 7
 
-let addr_from_ind (m:mach) (op: operand) : quad = 
-  match op with 
+let addr_from_ind (m : mach) (op : operand) : quad =
+  match op with
   | Ind1 im -> imm_to_quad im
   | Ind2 reg -> m.regs.(rind reg)
   | Ind3 (im, reg) -> Int64.add (imm_to_quad im) m.regs.(rind reg)
@@ -230,13 +230,13 @@ let src_operand (m : mach) (op : operand) : quad =
   match op with
   | Imm im -> imm_to_quad im
   | Reg reg -> m.regs.(rind reg)
-  | (Ind1 _| Ind2 _| Ind3 _) -> get_from_mem m (addr_from_ind m op)
+  | Ind1 _ | Ind2 _ | Ind3 _ -> get_from_mem m (addr_from_ind m op)
 
 let dst_operand (m : mach) (op : operand) (v : quad) : unit =
   match op with
   | Imm _ -> failwith "Cannot store data in an immediate value"
   | Reg reg -> m.regs.(rind reg) <- v
-  | (Ind1 _| Ind2 _| Ind3 _) -> store_in_mem m (addr_from_ind m op)  v
+  | Ind1 _ | Ind2 _ | Ind3 _ -> store_in_mem m (addr_from_ind m op) v
 
 open Int64_overflow
 
@@ -341,7 +341,7 @@ let cflow_ins (m : mach) (i : ins) : unit =
   match i with
   | Jmp, [ src ] -> m.regs.(rind Rip) <- src_operand m src
   | Callq, [ src ] ->
-      push m (Reg Rsp);
+      push m (Reg Rip);
       m.regs.(rind Rip) <- src_operand m src
   | Retq, [] -> pop m (Reg Rip)
   | J cc, [ src ] ->
@@ -353,24 +353,13 @@ let cflow_ins (m : mach) (i : ins) : unit =
   | _ -> ()
 
 let handle_instruction (m : mach) (i : ins) : unit =
-  let rip = m.regs.(rind Rip) in
+  m.regs.(rind Rip) <- Int64.add m.regs.(rind Rip) 8L;
   match i with
-  | (Addq | Subq | Imulq | Negq | Incq | Decq), _ ->
-      arith_ins m i;
-      m.regs.(rind Rip) <- Int64.add rip 8L
-  | (Xorq | Orq | Andq | Notq), _ ->
-      logic_ins m i;
-      m.regs.(rind Rip) <- Int64.add rip 8L
-  | (Shlq | Sarq | Shrq | Set _), _ ->
-      bitop_ins m i;
-      m.regs.(rind Rip) <- Int64.add rip 8L
-  | (Leaq | Movq | Pushq | Popq), _ ->
-      datam_ins m i;
-      m.regs.(rind Rip) <- Int64.add rip 8L
-  | (Jmp | Callq | Retq | J _), _ -> cflow_ins m i
-  | Cmpq, _ ->
-      cflow_ins m i;
-      m.regs.(rind Rip) <- Int64.add rip 8L
+  | (Addq | Subq | Imulq | Negq | Incq | Decq), _ -> arith_ins m i
+  | (Xorq | Orq | Andq | Notq), _ -> logic_ins m i
+  | (Shlq | Sarq | Shrq | Set _), _ -> bitop_ins m i
+  | (Leaq | Movq | Pushq | Popq), _ -> datam_ins m i
+  | (Jmp | Callq | Retq | J _ | Cmpq), _ -> cflow_ins m i
 
 let step (m : mach) : unit =
   let rip = m.regs.(rind Rip) in
@@ -573,7 +562,6 @@ let assemble (p : prog) : exec =
       data_seg = replace_data d_file sym_table;
     }
 
-
 (* Convert an object file into an executable machine state.
      - allocate the mem array
      - set up the memory state by writing the symbolic bytes to the
@@ -593,10 +581,11 @@ let load { entry; text_pos; data_pos; text_seg; data_seg } : mach =
   let cnd_flags = { fo = false; fs = false; fz = false } in
   let mem_array = Array.make mem_size (Byte '\x00') in
   let regs = Array.make nregs 0L in
-  Array.blit (Array.of_list text_seg)  0 mem_array 0 (List.length text_seg);
-  Array.blit (Array.of_list data_seg) 0 mem_array (int_map_addr data_pos) (List.length data_seg);
+  Array.blit (Array.of_list text_seg) 0 mem_array 0 (List.length text_seg);
+  Array.blit (Array.of_list data_seg) 0 mem_array (int_map_addr data_pos)
+    (List.length data_seg);
   let exit = Array.of_list (sbytes_of_int64 exit_addr) in
-  Array.blit exit 0 mem_array (mem_size-8) 8 ;
+  Array.blit exit 0 mem_array (mem_size - 8) 8;
 
   regs.(rind Rip) <- entry;
   regs.(rind Rsp) <- Int64.sub mem_top 8L;
