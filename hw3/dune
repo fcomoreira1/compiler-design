@@ -1,0 +1,19 @@
+(menhir
+  (modules ll/llparser)
+  (infer true)
+  (merge_into llparser))
+
+(rule
+ (target lllexer.ml)
+ (deps   ll/lllexer.mll)
+ (action (run ocamllex -o %{target} %{deps})))
+
+(executable
+ (name main)
+ (libraries unix str num))
+
+(env
+(dev
+(flags (:standard -warn-error -A -no-strict-formats))))
+
+(include_subdirs unqualified)

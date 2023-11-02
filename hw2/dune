@@ -1,7 +1,7 @@
 (executable
  (name main)
  (libraries unix str num)
- (modules int64_overflow main assert x86 simulator studenttests gradedtests))
+ (modules int64_overflow main assert x86 simulator studenttests gradedtests sp15_tests sp17_tests sp18_tests sp20_tests))
 (include_subdirs unqualified)
 
 (env
