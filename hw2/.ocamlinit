@@ -1,0 +1,7 @@
+let pp_hex_int64 fmt i =
+  Format.fprintf fmt "0x%Lx" i;;
+#install_printer pp_hex_int64;;
+#mod_use "x86/x86.ml";;
+#mod_use "int64_overflow.ml";;
+#use "simulator.ml";;
+open Asm;;
