@@ -249,8 +249,10 @@ let arg_loc (n : int) : operand =
   else if n = 5 then Reg R09
   else Ind3 (Lit (Int64.of_int ((n - 4) * 8)), Rbp)
 
-let rec args_aux (args : uid list) (n : int) : layout =
-  match args with h :: tl -> (h, arg_loc n) :: args_aux tl (n + 1) | _ -> []
+
+(* Allocate all arguments *)
+let rec args_loc_all (args : uid list) (n : int) : layout =
+  match args with h :: tl -> (h, arg_loc n) :: args_loc_all tl (n + 1) | _ -> []
 
 (* We suggest that you create a helper function that computes the
    stack layout for a given function declaration.
@@ -262,7 +264,7 @@ let rec args_aux (args : uid list) (n : int) : layout =
 *)
 
 let stack_layout (args : uid list) ((ini_block, lbled_blocks) : cfg) : layout =
-  let arg_layout = args_aux args 0 in
+  let arg_layout = args_loc_all args 0 in
   let rec block_layout ins_list lbl_blocks n =
     match ins_list with
     | (id, ins) :: tl ->
@@ -301,6 +303,7 @@ let rec operand_part (l : layout) : 'a list =
 
 let compile_fdecl (tdecls : (tid * ty) list) (name : string)
     ({ f_ty; f_param; f_cfg } : fdecl) : prog =
+  let l = stack_layout f_param f_cfg in
   []
 (* let s_layout = (stack_layout f_param f_cfg) in
    let asm= Text [(Movq,operand_part s_layout)] in
