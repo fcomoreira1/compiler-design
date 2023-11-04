@@ -84,8 +84,11 @@ let lookup m x = List.assoc x m
    destination (usually a register).
 *)
 let compile_operand (ctxt : ctxt) (dest : X86.operand) : Ll.operand -> ins =
-  function
-  | _ -> failwith "compile_operand unimplemented"
+  function    
+          |Ll.Null -> (Movq,[Imm (Lit 0L);dest])
+          |Ll.Const x-> (Movq, [Imm (Lit x);dest])
+          |Ll.Gid gid -> (Leaq ,[Imm (Lbl (Platform.mangle gid));Reg Rip])
+          |Ll.Id uid -> (Movq, [lookup ctxt.layout uid;dest])
 
 (* compiling call  ---------------------------------------------------------- *)
 
@@ -194,7 +197,15 @@ let compile_gep (ctxt : ctxt) (op : Ll.ty * Ll.operand) (path : Ll.operand list)
    - Bitcast: does nothing interesting at the assembly level
 *)
 let compile_insn (ctxt : ctxt) ((uid : uid), (i : Ll.insn)) : X86.ins list =
-  failwith "compile_insn not implemented"
+  match i with
+  |Binop (b,t,op1,op2)-> begin match t with
+                        |I1|I8|I64 -> begin match b with
+                                       |Add ->([(compile_operand ctxt (Reg R09)) op1])@([(compile_operand ctxt (Reg Rax)) op2])@[Addq, [Reg R09;Reg Rax]]
+                                       |_-> []
+                        end
+                                       |_->[]
+  end
+  |_-> []
 
 (* compiling terminators  --------------------------------------------------- *)
 
@@ -215,8 +226,15 @@ let mk_lbl (fn : string) (l : string) = fn ^ "." ^ l
    [fn] - the name of the function containing this terminator
 *)
 let compile_terminator (fn : string) (ctxt : ctxt) (t : Ll.terminator) :
-    ins list =
-  failwith "compile_terminator not implemented"
+        ins list = 
+                match t with
+                |Ret (rt,op) -> begin match rt with
+                                |Void -> [Popq,[Reg Rbp];Retq,[]]
+                                |_->[]
+                end
+
+                |_ -> []
+  
 
 (* compiling blocks --------------------------------------------------------- *)
 
@@ -226,7 +244,8 @@ let compile_terminator (fn : string) (ctxt : ctxt) (t : Ll.terminator) :
    [blk]  - LLVM IR code for the block
 *)
 let compile_block (fn : string) (ctxt : ctxt) (blk : Ll.block) : ins list =
-  failwith "compile_block not implemented"
+        match blk with
+        |_->[]
 
 let compile_lbl_block fn lbl ctxt blk : elem =
   Asm.text (mk_lbl fn lbl) (compile_block fn ctxt blk)
@@ -308,14 +327,12 @@ let rec assem (l:layout) (n:int) : 'a list =
 
 let compile_fdecl (tdecls : (tid * ty) list) (name : string)
     ({ f_ty; f_param; f_cfg } : fdecl) : prog =
-  let l = assem(stack_layout f_param f_cfg) 0 in
-  
+  let l = stack_layout f_param f_cfg in
+  let p = assem l 1 in
+  let t = compile_terminator name ({tdecls=tdecls;layout=l}) (Ret (Void,None)) in
   let start = [Pushq,[Reg Rbp];Movq, [Reg Rsp;Reg Rbp]] in
-  let asm =Text (start@l) in
+  let asm =Text (start@p@t) in
   [{lbl=name;global=true;asm= asm}]
-(* let s_layout = (stack_layout f_param f_cfg) in
-   let asm= Text [(Movq,operand_part s_layout)] in
-   [{lbl=name; global=true; asm=asm}]*)
 
 (* compile_gdecl ------------------------------------------------------------ *)
 (* Compile a global value into an X86 global data declaration and map
