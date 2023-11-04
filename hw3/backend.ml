@@ -301,10 +301,18 @@ let stack_layout (args : uid list) ((ini_block, lbled_blocks) : cfg) : layout =
 let rec operand_part (l : layout) : 'a list =
   match l with (_, op) :: tl -> op :: operand_part tl | _ -> []
 
+let rec assem (l:layout) (n:int) : 'a list =
+        match l with 
+        |(id,st)::tl->[Movq, [st;Ind3 (Lit (Int64.of_int ((-8*n))), Rbp)]]@(assem tl (n+1))
+        |_->[]
+
 let compile_fdecl (tdecls : (tid * ty) list) (name : string)
     ({ f_ty; f_param; f_cfg } : fdecl) : prog =
-  let l = stack_layout f_param f_cfg in
-  []
+  let l = assem(stack_layout f_param f_cfg) 0 in
+  
+  let start = [Pushq,[Reg Rbp];Movq, [Reg Rsp;Reg Rbp]] in
+  let asm =Text (start@l) in
+  [{lbl=name;global=true;asm= asm}]
 (* let s_layout = (stack_layout f_param f_cfg) in
    let asm= Text [(Movq,operand_part s_layout)] in
    [{lbl=name; global=true; asm=asm}]*)
