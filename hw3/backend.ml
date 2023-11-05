@@ -87,7 +87,7 @@ let compile_operand (ctxt : ctxt) (dest : X86.operand) : Ll.operand -> ins =
   function
   | Ll.Null -> (Movq, [ Imm (Lit 0L); dest ])
   | Ll.Const x -> (Movq, [ Imm (Lit x); dest ])
-  | Ll.Gid gid -> (Leaq, [ Imm (Lbl (Platform.mangle gid)); Reg Rip ])
+  | Ll.Gid gid -> (Leaq, [ Ind3 (Lbl (Platform.mangle gid), Rip); dest ])
   | Ll.Id uid -> (Movq, [ lookup ctxt.layout uid; dest ])
 
 (* compiling call  ---------------------------------------------------------- *)
@@ -209,18 +209,22 @@ let map_bop_opcode (b : bop) : opcode =
   | Or -> Orq
   | Xor -> Xorq
 
+let compile_icmp (ctxt: ctxt) (uid: uid) (c: Ll.cnd) (t: ty) (op1: Ll.operand) (op2: Ll.operand) = []
+  
+
 let compile_insn (ctxt : ctxt) ((uid : uid), (i : Ll.insn)) : X86.ins list =
   match i with
   | Binop (b, t, op1, op2) -> (
       match t with
       | I1 | I8 | I64 ->
           [
-            (compile_operand ctxt (Reg R10)) op1;
-            (compile_operand ctxt (Reg Rax)) op2;
-            (map_bop_opcode b, [ Reg R10; Reg Rax ]);
+            (compile_operand ctxt (Reg Rax)) op1;
+            (compile_operand ctxt (Reg Rcx)) op2;
+            (map_bop_opcode b, [ Reg Rcx; Reg Rax ]);
             (Movq, [ Reg Rax; lookup ctxt.layout uid ]);
           ]
-      | _ -> [])
+      | _ -> failwith "Invalid type for Binop")
+  | Icmp (c, t, op1, op2) -> compile_icmp ctxt uid c t op1 op2
   | _ -> []
 
 (* compiling terminators  --------------------------------------------------- *)
@@ -244,19 +248,42 @@ let mk_lbl (fn : string) (l : string) = fn ^ "." ^ l
 let compile_terminator (fn : string) (ctxt : ctxt) (t : Ll.terminator) :
     ins list =
   match t with
-  | Ret (rt, op) -> 
-      begin match rt with 
-      |Void -> [ (Popq, [ Reg Rbp ]); (Retq, []) ] 
-      |_-> []
-      end
-  |Br lbl -> [Jmp, [(lookup ctxt.layout lbl)]]
-  |Cbr (op,l1,l2)-> begin match op with
-                        |Null -> [Callq, [(lookup ctxt.layout l2)]]
-                        |Const i -> [(Cmpq, [(Imm(Lit 0L);Imm(Lit i))]);(J Eq,[(lookup ctxt.layout l1)]);(Jmp,[(lookup ctxt.layout l2)])]
-                        |Gid id|Id id -> [Cmpq, [Imm(Lit 0L); (lookup ctxt.layout id)]; J Eq,[(lookup ctxt.layout l1)]; (Jmp, [(lookup ctxt.layout l2)])]
-      end 
-
-  | _ -> []
+  | Ret (rt, op) ->
+      let stack_size = Int64.mul 8L (Int64.of_int (List.length ctxt.layout)) in
+      (match rt with
+      | I1 | I8 | I64 -> (
+          match Option.get op with
+          | Const i -> [ (Movq, [ Imm (Lit i); Reg Rax ]) ]
+          | Gid id | Id id -> [ (Movq, [ lookup ctxt.layout id; Reg Rax ]) ]
+          | _ -> failwith "Expected Non-Null return")
+      | _ -> [])
+      @ [
+          (Addq, [ Imm (Lit stack_size); Reg Rsp ]);
+          (Popq, [ Reg Rbp ]);
+          (Retq, []);
+        ]
+  | Br lbl -> [ (Jmp, [ Imm (Lbl (mk_lbl fn lbl)) ]) ]
+  | Cbr (op, l1, l2) -> (
+      let l1 = mk_lbl fn l1 in
+      let l2 = mk_lbl fn l2 in
+      match op with
+      | Null -> [ (Jmp, [ Imm (Lbl l2) ]) ]
+      | Const i ->
+          if i <> 0L then [ (Jmp, [ Imm (Lbl l1) ]) ]
+          else [ (Jmp, [ Imm (Lbl l2) ]) ]
+      | Id id ->
+          [
+            (Cmpq, [ Imm (Lit 0L); lookup ctxt.layout id ]);
+            (J Eq, [ Imm (Lbl l1) ]);
+            (Jmp, [ Imm (Lbl l2) ]);
+          ]
+      | Gid _ ->
+          [
+            compile_operand ctxt (Reg Rax) op;
+            (Cmpq, [ Imm (Lit 0L); Reg Rax ]);
+            (J Eq, [ Imm (Lbl l1) ]);
+            (Jmp, [ Imm (Lbl l2) ]);
+          ])
 
 (* compiling blocks --------------------------------------------------------- *)
 
@@ -317,24 +344,41 @@ let arg_loc (n : int) : operand =
 let nth_stack_slot (n : int) : X86.operand =
   Ind3 (Lit (Int64.of_int (-8 * (n + 1))), Rbp)
 
+let rec print_labels_blocks (lbled_blocks : (lbl * block) list) : unit =
+  match lbled_blocks with
+  | (lbl, _) :: tail ->
+      print_endline lbl;
+      print_labels_blocks tail
+  | [] -> ()
+
 let stack_layout (args : uid list) ((ini_block, lbled_blocks) : cfg) : layout =
   let arg_layout = List.mapi (fun i id -> (id, nth_stack_slot i)) args in
   let rec block_layout ins_list lbl_blocks n =
     match ins_list with
-    | (id, ins) :: tl ->
-        (match ins with
+    | (id, ins) :: tl -> (
+        match ins with
         | Binop _ | Alloca _ | Load _ | Icmp _ | Bitcast _ | Gep _ ->
-            [ (id, nth_stack_slot n) ]
-        | Call (t, _, _) -> (
-            match t with Void -> [] | _ -> [ (id, nth_stack_slot n) ])
+            [ (id, nth_stack_slot n) ] @ block_layout tl lbl_blocks (n + 1)
+        | Call (t, _, _) ->
+            (match t with Void -> [] | _ -> [ (id, nth_stack_slot n) ])
+            @ block_layout tl lbl_blocks (n + 1)
         | _ -> [])
-        @ block_layout tl lbl_blocks (n + 1)
-    | _ -> (
-        match lbled_blocks with
+    | [] -> (
+        match lbl_blocks with
         | (_, bl) :: tail -> block_layout bl.insns tail n
         | _ -> [])
   in
   arg_layout @ block_layout ini_block.insns lbled_blocks (List.length args)
+
+let compile_stack_layout (args : lbl list) (l : layout) : ins list =
+  let compile_arg (i : int) (arg : lbl) =
+    let op = arg_loc i in
+    match op with
+    | Reg _ -> [ (Movq, [ op; lookup l arg ]) ]
+    | Ind3 _ -> [ (Movq, [ op; Reg Rax ]); (Movq, [ Reg Rax; lookup l arg ]) ]
+    | _ -> failwith "Invalid output for arg_loc"
+  in
+  List.concat (List.mapi compile_arg args)
 
 (* The code for the entry-point of a function must do several things:
 
@@ -353,29 +397,22 @@ let stack_layout (args : uid list) ((ini_block, lbled_blocks) : cfg) : layout =
      to hold all of the local stack slots.
 *)
 
-let compile_stack_layout (args: lbl list) (l: layout) : ins list = 
-  let compile_arg (i: int) (arg: lbl) = 
-    let op = arg_loc i in
-    match op with
-    | Reg _ -> [(Movq, [ op; lookup l arg])]
-    | Ind3 _-> [(Movq, [ op; Reg Rax]); (Movq, [Reg Rax; lookup l arg]) ] 
-    | _ -> failwith "Invalid output for arg_loc"
-  in (List.concat (List.mapi compile_arg args))
-
 let compile_fdecl (tdecls : (tid * ty) list) (name : string)
     ({ f_ty; f_param; f_cfg } : fdecl) : prog =
   let main_block, lbl_blocks = f_cfg in
   let f_lay = stack_layout f_param f_cfg in
   let f_ctxt = { tdecls; layout = f_lay } in
-  let preamble = [ (Pushq, [ Reg Rbp ]); (Movq, [ Reg Rsp; Reg Rbp ]) ] in
+  let stack_size = Int64.mul 8L (Int64.of_int (List.length f_ctxt.layout)) in
+  let preamble =
+    [
+      (Pushq, [ Reg Rbp ]);
+      (Movq, [ Reg Rsp; Reg Rbp ]);
+      (Subq, [ Imm (Lit stack_size); Reg Rsp ]);
+    ]
+  in
   let asm_cons_layout = compile_stack_layout f_param f_lay in
   let first_block = compile_block name f_ctxt main_block in
   let other_blocks = compile_all_lbl_blocks name f_ctxt lbl_blocks in
-  (* let t = compile_terminator name f_ctxt (Ret (Void, None)) in
-     let terminator_block =
-       { lbl = mk_lbl name "exit"; global = false; asm = Text t }
-     in *)
-  (* let asm = Text (start @ p @ first_block @ other_blocks @ t) in *)
   [
     {
       lbl = name;
