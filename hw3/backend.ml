@@ -21,6 +21,18 @@ let compile_cnd = function
   | Ll.Sgt -> X86.Gt
   | Ll.Sge -> X86.Ge
 
+let compile_bop (b : bop) : opcode =
+  match b with
+  | Ll.Add -> X86.Addq
+  | Ll.Sub -> X86.Subq
+  | Ll.Mul -> X86.Imulq
+  | Ll.Shl -> X86.Shlq
+  | Ll.Lshr -> X86.Shrq
+  | Ll.Ashr -> X86.Sarq
+  | Ll.And -> X86.Andq
+  | Ll.Or -> X86.Orq
+  | Ll.Xor -> X86.Xorq
+
 (* locals and layout -------------------------------------------------------- *)
 
 (* One key problem in compiling the LLVM IR is how to map its local
@@ -197,34 +209,31 @@ let compile_gep (ctxt : ctxt) (op : Ll.ty * Ll.operand) (path : Ll.operand list)
    - Bitcast: does nothing interesting at the assembly level
 *)
 
-let map_bop_opcode (b : bop) : opcode =
-  match b with
-  | Add -> Addq
-  | Sub -> Subq
-  | Mul -> Imulq
-  | Shl -> Shlq
-  | Lshr -> Shrq
-  | Ashr -> Sarq
-  | And -> Andq
-  | Or -> Orq
-  | Xor -> Xorq
-
-let compile_icmp (ctxt: ctxt) (uid: uid) (c: Ll.cnd) (t: ty) (op1: Ll.operand) (op2: Ll.operand) = []
-  
 
 let compile_insn (ctxt : ctxt) ((uid : uid), (i : Ll.insn)) : X86.ins list =
+  let compile_binop b t op1 op2 =
+    match t with
+    | I1 | I8 | I64 ->
+        [
+          (compile_operand ctxt (Reg Rax)) op1;
+          (compile_operand ctxt (Reg Rcx)) op2;
+          (compile_bop b, [ Reg Rcx; Reg Rax ]);
+          (Movq, [ Reg Rax; lookup ctxt.layout uid ]);
+        ]
+    | _ -> failwith "Invalid type for Binop"
+  in
+  let compile_icmp (c : Ll.cnd) (t : ty) (op1 : Ll.operand) (op2 : Ll.operand) =
+    [
+      (Movq, [Imm (Lit 0L); lookup ctxt.layout uid]);
+      (compile_operand ctxt(Reg Rcx) op1);
+      (compile_operand ctxt(Reg Rax) op2);
+      (Cmpq, [Reg Rcx; Reg Rax]);
+      (Set (compile_cnd c), [lookup ctxt.layout uid]);
+    ]
+  in
   match i with
-  | Binop (b, t, op1, op2) -> (
-      match t with
-      | I1 | I8 | I64 ->
-          [
-            (compile_operand ctxt (Reg Rax)) op1;
-            (compile_operand ctxt (Reg Rcx)) op2;
-            (map_bop_opcode b, [ Reg Rcx; Reg Rax ]);
-            (Movq, [ Reg Rax; lookup ctxt.layout uid ]);
-          ]
-      | _ -> failwith "Invalid type for Binop")
-  | Icmp (c, t, op1, op2) -> compile_icmp ctxt uid c t op1 op2
+  | Binop (b, t, op1, op2) -> compile_binop b t op1 op2
+  | Icmp (c, t, op1, op2) -> compile_icmp c t op1 op2
   | _ -> []
 
 (* compiling terminators  --------------------------------------------------- *)
