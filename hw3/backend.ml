@@ -102,6 +102,12 @@ let compile_operand (ctxt : ctxt) (dest : X86.operand) : Ll.operand -> ins =
   | Ll.Gid gid -> (Leaq, [ Ind3 (Lbl (Platform.mangle gid), Rip); dest ])
   | Ll.Id uid -> (Movq, [ lookup ctxt.layout uid; dest ])
 
+(* let compile_to_operand (ctxt: ctxt) (from: X86.operand) : Ll.operand -> ins =
+   function
+   | Ll.Id uid -> (Movq, [ from; lookup ctxt.layout uid])
+   | Ll.Gid gid -> (Movq, [ from; Imm (Lbl (Platform.mangle gid))])
+   | Ll.Null | Ll.Const _ -> failwith "Cannot move to Null or Const" *)
+
 (* compiling call  ---------------------------------------------------------- *)
 
 (* You will probably find it helpful to implement a helper function that
@@ -208,9 +214,15 @@ let compile_gep (ctxt : ctxt) (op : Ll.ty * Ll.operand) (path : Ll.operand list)
 
    - Bitcast: does nothing interesting at the assembly level
 *)
-
+let print_layout (l : layout) =
+  let print_lbl (aux : lbl * X86.operand) : unit =
+    let aux, _ = aux in
+    print_endline aux
+  in
+  List.iter print_lbl l
 
 let compile_insn (ctxt : ctxt) ((uid : uid), (i : Ll.insn)) : X86.ins list =
+  (* let () = print_layout ctxt.layout in *)
   let compile_binop b t op1 op2 =
     match t with
     | I1 | I8 | I64 ->
@@ -222,19 +234,80 @@ let compile_insn (ctxt : ctxt) ((uid : uid), (i : Ll.insn)) : X86.ins list =
         ]
     | _ -> failwith "Invalid type for Binop"
   in
-  let compile_icmp (c : Ll.cnd) (t : ty) (op1 : Ll.operand) (op2 : Ll.operand) =
+  let compile_icmp (c : Ll.cnd) (_ : ty) (op1 : Ll.operand) (op2 : Ll.operand) =
     [
-      (Movq, [Imm (Lit 0L); lookup ctxt.layout uid]);
-      (compile_operand ctxt(Reg Rax) op1);
-      (compile_operand ctxt(Reg Rcx) op2);
-      (Cmpq, [Reg Rcx; Reg Rax]);
-      (Set (compile_cnd c), [lookup ctxt.layout uid]);
+      (Movq, [ Imm (Lit 0L); lookup ctxt.layout uid ]);
+      compile_operand ctxt (Reg Rax) op1;
+      compile_operand ctxt (Reg Rcx) op2;
+      (Cmpq, [ Reg Rcx; Reg Rax ]);
+      (Set (compile_cnd c), [ lookup ctxt.layout uid ]);
     ]
+  in
+  let compile_alloca (t : ty) : X86.ins list =
+    match t with
+    | I1 | I8 | I64 | Ptr _ ->
+        [
+          (Subq, [ Imm (Lit 8L); Reg Rsp ]);
+          (Movq, [ Reg Rsp; lookup ctxt.layout uid ]);
+        ]
+    | _ -> failwith "Cannot allocate"
+  in
+  let compile_store (_ : ty) (op1 : Ll.operand) (op2 : Ll.operand) =
+    [
+      compile_operand ctxt (Reg Rcx) op1;
+      compile_operand ctxt (Reg Rax) op2;
+      (Movq, [ Reg Rcx; Ind2 Rax ]);
+    ]
+  in
+  let compile_load (_ : ty) (op : Ll.operand) : X86.ins list =
+    let res1 = compile_operand ctxt (Reg Rcx) op in
+    let res2 = (Movq, [ Ind2 Rcx; Reg Rcx ]) in
+    let res3 = (Movq, [ Reg Rcx; lookup ctxt.layout uid ]) in
+    [ res1; res2; res3 ]
+  in
+  let compile_call (t : ty) (op : Ll.operand) (types : (ty * Ll.operand) list) =
+    let arg_save_loc (n : int) (aux : ty * Ll.operand) : X86.ins list =
+      let _, src = aux in
+      if n = 0 then [ compile_operand ctxt (Reg Rdi) src ]
+      else if n = 1 then [ compile_operand ctxt (Reg Rsi) src ]
+      else if n = 2 then [ compile_operand ctxt (Reg Rdx) src ]
+      else if n = 3 then [ compile_operand ctxt (Reg Rcx) src ]
+      else if n = 4 then [ compile_operand ctxt (Reg R08) src ]
+      else if n = 5 then [ compile_operand ctxt (Reg R09) src ]
+      else [ compile_operand ctxt (Reg Rax) src; (Pushq, [ Reg Rax ]) ]
+    in
+    let place_args = List.concat (List.mapi arg_save_loc types) in
+    let call =
+      match op with
+      | Gid id -> [ (Callq, [ Imm (Lbl (Platform.mangle id)) ]) ]
+      | Id id -> [ (Callq, [ lookup ctxt.layout id ]) ]
+      | Null | Const _ -> failwith "Cannot call Null or Const"
+    in
+    let store_ret =
+      match t with
+      | I1 | I8 | I64 -> [ (Movq, [ Reg Rax; lookup ctxt.layout uid ]) ]
+      | _ -> []
+    in
+    place_args @ call @ store_ret
+  in
+  let compile_bitcast (_ : ty) (op : Ll.operand) (_ : ty) =
+    [
+      compile_operand ctxt (Reg Rax) op;
+      (Movq, [ Reg Rax; lookup ctxt.layout uid ]);
+    ]
+  in
+  let compile_gep (t: ty) (op1: Ll.operand) (ops: Ll.operand list) : ins list = 
+    []
   in
   match i with
   | Binop (b, t, op1, op2) -> compile_binop b t op1 op2
   | Icmp (c, t, op1, op2) -> compile_icmp c t op1 op2
-  | _ -> []
+  | Alloca t -> compile_alloca t
+  | Store (t, op1, op2) -> compile_store t op1 op2
+  | Load (t, op) -> compile_load t op
+  | Call (t, op, types) -> compile_call t op types
+  | Bitcast (t1, op, t2) -> compile_bitcast t1 op t2
+  | Gep (t, op1, ops) -> compile_gep t op1 ops
 
 (* compiling terminators  --------------------------------------------------- *)
 
@@ -266,11 +339,7 @@ let compile_terminator (fn : string) (ctxt : ctxt) (t : Ll.terminator) :
           | Gid id | Id id -> [ (Movq, [ lookup ctxt.layout id; Reg Rax ]) ]
           | _ -> failwith "Expected Non-Null return")
       | _ -> [])
-      @ [
-          (Addq, [ Imm (Lit stack_size); Reg Rsp ]);
-          (Popq, [ Reg Rbp ]);
-          (Retq, []);
-        ]
+      @ [ (Movq, [ Reg Rbp; Reg Rsp ]); (Popq, [ Reg Rbp ]); (Retq, []) ]
   | Br lbl -> [ (Jmp, [ Imm (Lbl (mk_lbl fn lbl)) ]) ]
   | Cbr (op, l1, l2) -> (
       let l1 = mk_lbl fn l1 in
@@ -371,7 +440,7 @@ let stack_layout (args : uid list) ((ini_block, lbled_blocks) : cfg) : layout =
         | Call (t, _, _) ->
             (match t with Void -> [] | _ -> [ (id, nth_stack_slot n) ])
             @ block_layout tl lbl_blocks (n + 1)
-        | _ -> [])
+        | _ -> block_layout tl lbl_blocks n)
     | [] -> (
         match lbl_blocks with
         | (_, bl) :: tail -> block_layout bl.insns tail n
