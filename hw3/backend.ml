@@ -225,8 +225,8 @@ let compile_insn (ctxt : ctxt) ((uid : uid), (i : Ll.insn)) : X86.ins list =
   let compile_icmp (c : Ll.cnd) (t : ty) (op1 : Ll.operand) (op2 : Ll.operand) =
     [
       (Movq, [Imm (Lit 0L); lookup ctxt.layout uid]);
-      (compile_operand ctxt(Reg Rcx) op1);
-      (compile_operand ctxt(Reg Rax) op2);
+      (compile_operand ctxt(Reg Rax) op1);
+      (compile_operand ctxt(Reg Rcx) op2);
       (Cmpq, [Reg Rcx; Reg Rax]);
       (Set (compile_cnd c), [lookup ctxt.layout uid]);
     ]
@@ -283,14 +283,14 @@ let compile_terminator (fn : string) (ctxt : ctxt) (t : Ll.terminator) :
       | Id id ->
           [
             (Cmpq, [ Imm (Lit 0L); lookup ctxt.layout id ]);
-            (J Eq, [ Imm (Lbl l1) ]);
+            (J Neq, [ Imm (Lbl l1) ]);
             (Jmp, [ Imm (Lbl l2) ]);
           ]
       | Gid _ ->
           [
             compile_operand ctxt (Reg Rax) op;
             (Cmpq, [ Imm (Lit 0L); Reg Rax ]);
-            (J Eq, [ Imm (Lbl l1) ]);
+            (J Neq, [ Imm (Lbl l1) ]);
             (Jmp, [ Imm (Lbl l2) ]);
           ])
 
