@@ -244,8 +244,18 @@ let mk_lbl (fn : string) (l : string) = fn ^ "." ^ l
 let compile_terminator (fn : string) (ctxt : ctxt) (t : Ll.terminator) :
     ins list =
   match t with
-  | Ret (rt, op) -> (
-      match rt with Void -> [ (Popq, [ Reg Rbp ]); (Retq, []) ] | _ -> [])
+  | Ret (rt, op) -> 
+      begin match rt with 
+      |Void -> [ (Popq, [ Reg Rbp ]); (Retq, []) ] 
+      |_-> []
+      end
+  |Br lbl -> [Jmp, [(lookup ctxt.layout lbl)]]
+  |Cbr (op,l1,l2)-> begin match op with
+                        |Null -> [Callq, [(lookup ctxt.layout l2)]]
+                        |Const i -> [(Cmpq, [(Imm(Lit 0L);Imm(Lit i))]);(J Eq,[(lookup ctxt.layout l1)]);(Jmp,[(lookup ctxt.layout l2)])]
+                        |Gid id|Id id -> [Cmpq, [Imm(Lit 0L); (lookup ctxt.layout id)]; J Eq,[(lookup ctxt.layout l1)]; (Jmp, [(lookup ctxt.layout l2)])]
+      end 
+
   | _ -> []
 
 (* compiling blocks --------------------------------------------------------- *)
