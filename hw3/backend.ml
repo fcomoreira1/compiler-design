@@ -84,11 +84,11 @@ let lookup m x = List.assoc x m
    destination (usually a register).
 *)
 let compile_operand (ctxt : ctxt) (dest : X86.operand) : Ll.operand -> ins =
-  function    
-          |Ll.Null -> (Movq,[Imm (Lit 0L);dest])
-          |Ll.Const x-> (Movq, [Imm (Lit x);dest])
-          |Ll.Gid gid -> (Leaq ,[Imm (Lbl (Platform.mangle gid));Reg Rip])
-          |Ll.Id uid -> (Movq, [lookup ctxt.layout uid;dest])
+  function
+  | Ll.Null -> (Movq, [ Imm (Lit 0L); dest ])
+  | Ll.Const x -> (Movq, [ Imm (Lit x); dest ])
+  | Ll.Gid gid -> (Leaq, [ Imm (Lbl (Platform.mangle gid)); Reg Rip ])
+  | Ll.Id uid -> (Movq, [ lookup ctxt.layout uid; dest ])
 
 (* compiling call  ---------------------------------------------------------- *)
 
@@ -196,16 +196,32 @@ let compile_gep (ctxt : ctxt) (op : Ll.ty * Ll.operand) (path : Ll.operand list)
 
    - Bitcast: does nothing interesting at the assembly level
 *)
+
+let map_bop_opcode (b : bop) : opcode =
+  match b with
+  | Add -> Addq
+  | Sub -> Subq
+  | Mul -> Imulq
+  | Shl -> Shlq
+  | Lshr -> Shrq
+  | Ashr -> Sarq
+  | And -> Andq
+  | Or -> Orq
+  | Xor -> Xorq
+
 let compile_insn (ctxt : ctxt) ((uid : uid), (i : Ll.insn)) : X86.ins list =
   match i with
-  |Binop (b,t,op1,op2)-> begin match t with
-                        |I1|I8|I64 -> begin match b with
-                                       |Add ->([(compile_operand ctxt (Reg R09)) op1])@([(compile_operand ctxt (Reg Rax)) op2])@[Addq, [Reg R09;Reg Rax]]
-                                       |_-> []
-                        end
-                                       |_->[]
-  end
-  |_-> []
+  | Binop (b, t, op1, op2) -> (
+      match t with
+      | I1 | I8 | I64 ->
+          [
+            (compile_operand ctxt (Reg R10)) op1;
+            (compile_operand ctxt (Reg Rax)) op2;
+            (map_bop_opcode b, [ Reg R10; Reg Rax ]);
+            (Movq, [ Reg Rax; lookup ctxt.layout uid ]);
+          ]
+      | _ -> [])
+  | _ -> []
 
 (* compiling terminators  --------------------------------------------------- *)
 
@@ -226,15 +242,11 @@ let mk_lbl (fn : string) (l : string) = fn ^ "." ^ l
    [fn] - the name of the function containing this terminator
 *)
 let compile_terminator (fn : string) (ctxt : ctxt) (t : Ll.terminator) :
-        ins list = 
-                match t with
-                |Ret (rt,op) -> begin match rt with
-                                |Void -> [Popq,[Reg Rbp];Retq,[]]
-                                |_->[]
-                end
-
-                |_ -> []
-  
+    ins list =
+  match t with
+  | Ret (rt, op) -> (
+      match rt with Void -> [ (Popq, [ Reg Rbp ]); (Retq, []) ] | _ -> [])
+  | _ -> []
 
 (* compiling blocks --------------------------------------------------------- *)
 
@@ -244,11 +256,20 @@ let compile_terminator (fn : string) (ctxt : ctxt) (t : Ll.terminator) :
    [blk]  - LLVM IR code for the block
 *)
 let compile_block (fn : string) (ctxt : ctxt) (blk : Ll.block) : ins list =
-        match blk with
-        |_->[]
+  let ins_block = List.concat_map (compile_insn ctxt) blk.insns in
+  let _, term = blk.term in
+  ins_block @ compile_terminator fn ctxt term
 
 let compile_lbl_block fn lbl ctxt blk : elem =
   Asm.text (mk_lbl fn lbl) (compile_block fn ctxt blk)
+
+let compile_all_lbl_blocks (name : string) (f_ctxt : ctxt)
+    (lbl_blocks : (lbl * block) list) : elem list =
+  let asm_lbl_block (lbl_block : lbl * block) : elem =
+    let lbl, blk = lbl_block in
+    compile_lbl_block name lbl f_ctxt blk
+  in
+  List.map asm_lbl_block lbl_blocks
 
 (* compile_fdecl ------------------------------------------------------------ *)
 
@@ -268,10 +289,11 @@ let arg_loc (n : int) : operand =
   else if n = 5 then Reg R09
   else Ind3 (Lit (Int64.of_int ((n - 4) * 8)), Rbp)
 
-
 (* Allocate all arguments *)
-let rec args_loc_all (args : uid list) (n : int) : layout =
-  match args with h :: tl -> (h, arg_loc n) :: args_loc_all tl (n + 1) | _ -> []
+(* let rec args_loc_all (args : uid list) (n : int) : layout =
+   match args with
+   | h :: tl -> (h, arg_loc n) :: args_loc_all tl (n + 1)
+   | _ -> [] *)
 
 (* We suggest that you create a helper function that computes the
    stack layout for a given function declaration.
@@ -282,16 +304,19 @@ let rec args_loc_all (args : uid list) (n : int) : layout =
    - see the discussion about locals
 *)
 
+let nth_stack_slot (n : int) : X86.operand =
+  Ind3 (Lit (Int64.of_int (-8 * (n + 1))), Rbp)
+
 let stack_layout (args : uid list) ((ini_block, lbled_blocks) : cfg) : layout =
-  let arg_layout = args_loc_all args 0 in
+  let arg_layout = List.mapi (fun i id -> (id, nth_stack_slot i)) args in
   let rec block_layout ins_list lbl_blocks n =
     match ins_list with
     | (id, ins) :: tl ->
         (match ins with
         | Binop _ | Alloca _ | Load _ | Icmp _ | Bitcast _ | Gep _ ->
-            [ (id, arg_loc n) ]
+            [ (id, nth_stack_slot n) ]
         | Call (t, _, _) -> (
-            match t with Void -> [] | _ -> [ (id, arg_loc n) ])
+            match t with Void -> [] | _ -> [ (id, nth_stack_slot n) ])
         | _ -> [])
         @ block_layout tl lbl_blocks (n + 1)
     | _ -> (
@@ -299,7 +324,7 @@ let stack_layout (args : uid list) ((ini_block, lbled_blocks) : cfg) : layout =
         | (_, bl) :: tail -> block_layout bl.insns tail n
         | _ -> [])
   in
-  arg_layout @ (block_layout ini_block.insns lbled_blocks (List.length args))
+  arg_layout @ block_layout ini_block.insns lbled_blocks (List.length args)
 
 (* The code for the entry-point of a function must do several things:
 
@@ -317,22 +342,38 @@ let stack_layout (args : uid list) ((ini_block, lbled_blocks) : cfg) : layout =
    - the function entry code should allocate the stack storage needed
      to hold all of the local stack slots.
 *)
-let rec operand_part (l : layout) : 'a list =
-  match l with (_, op) :: tl -> op :: operand_part tl | _ -> []
 
-let rec assem (l:layout) (n:int) : 'a list =
-        match l with 
-        |(id,st)::tl->[Movq, [st;Ind3 (Lit (Int64.of_int ((-8*n))), Rbp)]]@(assem tl (n+1))
-        |_->[]
+let compile_stack_layout (args: lbl list) (l: layout) : ins list = 
+  let compile_arg (i: int) (arg: lbl) = 
+    let op = arg_loc i in
+    match op with
+    | Reg _ -> [(Movq, [ op; lookup l arg])]
+    | Ind3 _-> [(Movq, [ op; Reg Rax]); (Movq, [Reg Rax; lookup l arg]) ] 
+    | _ -> failwith "Invalid output for arg_loc"
+  in (List.concat (List.mapi compile_arg args))
 
 let compile_fdecl (tdecls : (tid * ty) list) (name : string)
     ({ f_ty; f_param; f_cfg } : fdecl) : prog =
-  let l = stack_layout f_param f_cfg in
-  let p = assem l 1 in
-  let t = compile_terminator name ({tdecls=tdecls;layout=l}) (Ret (Void,None)) in
-  let start = [Pushq,[Reg Rbp];Movq, [Reg Rsp;Reg Rbp]] in
-  let asm =Text (start@p@t) in
-  [{lbl=name;global=true;asm= asm}]
+  let main_block, lbl_blocks = f_cfg in
+  let f_lay = stack_layout f_param f_cfg in
+  let f_ctxt = { tdecls; layout = f_lay } in
+  let preamble = [ (Pushq, [ Reg Rbp ]); (Movq, [ Reg Rsp; Reg Rbp ]) ] in
+  let asm_cons_layout = compile_stack_layout f_param f_lay in
+  let first_block = compile_block name f_ctxt main_block in
+  let other_blocks = compile_all_lbl_blocks name f_ctxt lbl_blocks in
+  (* let t = compile_terminator name f_ctxt (Ret (Void, None)) in
+     let terminator_block =
+       { lbl = mk_lbl name "exit"; global = false; asm = Text t }
+     in *)
+  (* let asm = Text (start @ p @ first_block @ other_blocks @ t) in *)
+  [
+    {
+      lbl = name;
+      global = true;
+      asm = Text (preamble @ asm_cons_layout @ first_block);
+    };
+  ]
+  @ other_blocks
 
 (* compile_gdecl ------------------------------------------------------------ *)
 (* Compile a global value into an X86 global data declaration and map
