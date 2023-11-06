@@ -5,8 +5,12 @@ open Driver
 
 (* testing harness ---------------------------------------------------------- *)
 exception Ran_tests
-let suite = ref (Studenttests.provided_tests @ Gradedtests.graded_tests)
-
+let suite = ref ([ Test ("dbernhard", Gradedtests.executed Dbernhard.dbernhard_tests)
+  ; Test ("nicdard", Nicdard.executed Nicdard.nicdard_tests)
+  ; Test ("haenniro", Gradedtests.executed_c_link Haenniro.my_tests)
+  ; Test ("zikai", Gradedtests.executed Zikai.zikai_tests)
+  ]
+@ Gradedtests.graded_tests)
 let execute_tests () =
   let outcome = run_suite !suite in
   Printf.printf "%s\n" (outcome_to_string outcome);
