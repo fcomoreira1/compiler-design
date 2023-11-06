@@ -285,7 +285,7 @@ let compile_insn (ctxt : ctxt) ((uid : uid), (i : Ll.insn)) : X86.ins list =
     in
     let store_ret =
       match t with
-      | I1 | I8 | I64 -> [ (Movq, [ Reg Rax; lookup ctxt.layout uid ]) ]
+      | I1 | I8 | I64 | Ptr _ -> [ (Movq, [ Reg Rax; lookup ctxt.layout uid ]) ]
       | _ -> []
     in
     place_args @ call @ store_ret
@@ -296,8 +296,41 @@ let compile_insn (ctxt : ctxt) ((uid : uid), (i : Ll.insn)) : X86.ins list =
       (Movq, [ Reg Rax; lookup ctxt.layout uid ]);
     ]
   in
-  let compile_gep (t: ty) (op1: Ll.operand) (ops: Ll.operand list) : ins list = 
-    []
+  let compile_gep (t : ty) (op : Ll.operand) (ops : Ll.operand list) =
+    let rec aux_compile_gep (t : ty) (ops : Ll.operand list) =
+      match ops with
+      | h :: tail -> (
+          match t with
+          | Ptr t | Array (_, t) ->
+              let quad_size = Int64.of_int (size_ty ctxt.tdecls t) in
+              [
+                compile_operand ctxt (Reg Rcx) h;
+                (Imulq, [ Imm (Lit quad_size); Reg Rcx ]);
+                (Addq, [ Reg Rcx; Reg Rax ]);
+              ]
+              @ aux_compile_gep t tail
+          | Struct tl -> (
+              match h with
+              | Const n ->
+                  let n1 = Int64.to_int n in
+                  let sizes =
+                    List.mapi
+                      (fun i t ->
+                        if i < n1 then Int64.of_int (size_ty ctxt.tdecls t)
+                        else 0L)
+                      tl
+                  in
+                  let sum_sizes = List.fold_left Int64.add 0L sizes in
+                  [ (Addq, [ Imm (Lit sum_sizes); Reg Rax ]) ]
+                  @ aux_compile_gep (List.nth tl n1) tail
+              | _ -> failwith "Cannot obtain non-constant index of Struct")
+          | Namedt tid -> aux_compile_gep (List.assoc tid ctxt.tdecls) ops
+          | _ -> failwith "Cannot compute Gep of this type")
+      | [] -> []
+    in
+    [ compile_operand ctxt (Reg Rax) op ]
+    @ aux_compile_gep t ops
+    @ [ (Movq, [ Reg Rax; lookup ctxt.layout uid ]) ]
   in
   match i with
   | Binop (b, t, op1, op2) -> compile_binop b t op1 op2
@@ -307,7 +340,7 @@ let compile_insn (ctxt : ctxt) ((uid : uid), (i : Ll.insn)) : X86.ins list =
   | Load (t, op) -> compile_load t op
   | Call (t, op, types) -> compile_call t op types
   | Bitcast (t1, op, t2) -> compile_bitcast t1 op t2
-  | Gep (t, op1, ops) -> compile_gep t op1 ops
+  | Gep (t, op, ops) -> compile_gep t op ops
 
 (* compiling terminators  --------------------------------------------------- *)
 
