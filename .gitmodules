@@ -1,0 +1,3 @@
+[submodule "compiler-design-eth-tests"]
+	path = compiler-design-eth-tests
+	url = https://github.com/nicdard/compiler-design-eth-tests.git

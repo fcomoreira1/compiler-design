@@ -189,7 +189,40 @@ let rec size_ty (tdecls : (tid * ty) list) (t : Ll.ty) : int =
 *)
 let compile_gep (ctxt : ctxt) (op : Ll.ty * Ll.operand) (path : Ll.operand list)
     : ins list =
-  failwith "compile_gep not implemented"
+    let rec aux_compile_gep (t : ty) (ops : Ll.operand list) =
+      match ops with
+      | h :: tail -> (
+          match t with
+          | Ptr t | Array (_, t) ->
+              let quad_size = Int64.of_int (size_ty ctxt.tdecls t) in
+              [
+                compile_operand ctxt (Reg Rcx) h;
+                (Imulq, [ Imm (Lit quad_size); Reg Rcx ]);
+                (Addq, [ Reg Rcx; Reg Rax ]);
+              ]
+              @ aux_compile_gep t tail
+          | Struct tl -> (
+              match h with
+              | Const n ->
+                  let n1 = Int64.to_int n in
+                  let sizes =
+                    List.mapi
+                      (fun i t ->
+                        if i < n1 then Int64.of_int (size_ty ctxt.tdecls t)
+                        else 0L)
+                      tl
+                  in
+                  let sum_sizes = List.fold_left Int64.add 0L sizes in
+                  [ (Addq, [ Imm (Lit sum_sizes); Reg Rax ]) ]
+                  @ aux_compile_gep (List.nth tl n1) tail
+              | _ -> failwith "Cannot obtain non-constant index of Struct")
+          | Namedt tid -> aux_compile_gep (List.assoc tid ctxt.tdecls) ops
+          | _ -> failwith "Cannot compute Gep of this type")
+      | [] -> []
+    in
+    let t, op = op in
+    [ compile_operand ctxt (Reg Rax) op ]
+    @ aux_compile_gep t path
 
 (* compiling instructions  -------------------------------------------------- *)
 
@@ -276,7 +309,7 @@ let compile_insn (ctxt : ctxt) ((uid : uid), (i : Ll.insn)) : X86.ins list =
       else if n = 5 then [ compile_operand ctxt (Reg R09) src ]
       else [ compile_operand ctxt (Reg Rax) src; (Pushq, [ Reg Rax ]) ]
     in
-    let place_args = List.concat (List.mapi arg_save_loc types) in
+    let place_args = List.concat (List.rev (List.mapi arg_save_loc types)) in
     let call =
       match op with
       | Gid id -> [ (Callq, [ Imm (Lbl (Platform.mangle id)) ]) ]
@@ -296,42 +329,7 @@ let compile_insn (ctxt : ctxt) ((uid : uid), (i : Ll.insn)) : X86.ins list =
       (Movq, [ Reg Rax; lookup ctxt.layout uid ]);
     ]
   in
-  let compile_gep (t : ty) (op : Ll.operand) (ops : Ll.operand list) =
-    let rec aux_compile_gep (t : ty) (ops : Ll.operand list) =
-      match ops with
-      | h :: tail -> (
-          match t with
-          | Ptr t | Array (_, t) ->
-              let quad_size = Int64.of_int (size_ty ctxt.tdecls t) in
-              [
-                compile_operand ctxt (Reg Rcx) h;
-                (Imulq, [ Imm (Lit quad_size); Reg Rcx ]);
-                (Addq, [ Reg Rcx; Reg Rax ]);
-              ]
-              @ aux_compile_gep t tail
-          | Struct tl -> (
-              match h with
-              | Const n ->
-                  let n1 = Int64.to_int n in
-                  let sizes =
-                    List.mapi
-                      (fun i t ->
-                        if i < n1 then Int64.of_int (size_ty ctxt.tdecls t)
-                        else 0L)
-                      tl
-                  in
-                  let sum_sizes = List.fold_left Int64.add 0L sizes in
-                  [ (Addq, [ Imm (Lit sum_sizes); Reg Rax ]) ]
-                  @ aux_compile_gep (List.nth tl n1) tail
-              | _ -> failwith "Cannot obtain non-constant index of Struct")
-          | Namedt tid -> aux_compile_gep (List.assoc tid ctxt.tdecls) ops
-          | _ -> failwith "Cannot compute Gep of this type")
-      | [] -> []
-    in
-    [ compile_operand ctxt (Reg Rax) op ]
-    @ aux_compile_gep t ops
-    @ [ (Movq, [ Reg Rax; lookup ctxt.layout uid ]) ]
-  in
+  
   match i with
   | Binop (b, t, op1, op2) -> compile_binop b t op1 op2
   | Icmp (c, t, op1, op2) -> compile_icmp c t op1 op2
@@ -340,7 +338,8 @@ let compile_insn (ctxt : ctxt) ((uid : uid), (i : Ll.insn)) : X86.ins list =
   | Load (t, op) -> compile_load t op
   | Call (t, op, types) -> compile_call t op types
   | Bitcast (t1, op, t2) -> compile_bitcast t1 op t2
-  | Gep (t, op, ops) -> compile_gep t op ops
+  | Gep (t, op, ops) -> compile_gep ctxt (t, op) ops
+                        @ [ (Movq, [ Reg Rax; lookup ctxt.layout uid ]) ]
 
 (* compiling terminators  --------------------------------------------------- *)
 
@@ -366,11 +365,7 @@ let compile_terminator (fn : string) (ctxt : ctxt) (t : Ll.terminator) :
   | Ret (rt, op) ->
       let stack_size = Int64.mul 8L (Int64.of_int (List.length ctxt.layout)) in
       (match rt with
-      | I1 | I8 | I64 -> (
-          match Option.get op with
-          | Const i -> [ (Movq, [ Imm (Lit i); Reg Rax ]) ]
-          | Gid id | Id id -> [ (Movq, [ lookup ctxt.layout id; Reg Rax ]) ]
-          | _ -> failwith "Expected Non-Null return")
+      | I1 | I8 | I64 | Ptr _ -> [compile_operand ctxt (Reg Rax) (Option.get op)]
       | _ -> [])
       @ [ (Movq, [ Reg Rbp; Reg Rsp ]); (Popq, [ Reg Rbp ]); (Retq, []) ]
   | Br lbl -> [ (Jmp, [ Imm (Lbl (mk_lbl fn lbl)) ]) ]
