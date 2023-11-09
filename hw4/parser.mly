@@ -37,6 +37,18 @@ let loc (startpos:Lexing.position) (endpos:Lexing.position) (elt:'a) : 'a node =
 %token TILDE    /* ~ */
 %token BANG     /* ! */
 %token GLOBAL   /* global */
+%token NOTEQ
+%token LTHAN
+%token LTEQ
+%token GTHAN
+%token GTEQ
+%token AND
+%token OR
+%token BITAND
+%token BITOR
+%token SHIFTL
+%token SHIFTR
+%token SHIFTRAR
 
 %left PLUS DASH
 %left STAR
@@ -95,6 +107,18 @@ ty:
   | DASH   { Sub }
   | STAR   { Mul }
   | EQEQ   { Eq }
+  | SHIFTL {Shl }
+  | SHIFTR {Shr}
+  | SHIFTRAR {Sar}
+  | LTHAN {Lt}
+  | LTEQ {Lte}
+  | GTHAN {Gt}
+  | GTEQ {Gte}
+  | NOTEQ {Neq}
+  | BITAND {IAnd}
+  | BITOR {IOr}
+  | AND {And}
+  | OR {Or}
 
 %inline uop:
   | DASH  { Neg }
