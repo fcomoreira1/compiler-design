@@ -144,6 +144,7 @@ ty:
 gexp:
   | t=rtyp NULL   { loc $startpos $endpos @@ CNull t }
   | i=INT         { loc $startpos $endpos @@ CInt i }
+  | s=STRING      { loc $startpos $endpos @@ CStr s}
   | FALSE         { loc $startpos $endpos @@ CBool false}
   | TRUE          { loc $startpos $endpos @@ CBool true}
   | NEW t=ty LBRACE gs=separated_list(COMMA,gexp)
