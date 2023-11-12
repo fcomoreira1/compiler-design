@@ -12,7 +12,6 @@ let loc (startpos:Lexing.position) (endpos:Lexing.position) (elt:'a) : 'a node =
 %token NULL
 %token <string> STRING
 %token <string> IDENT
-%token <bool> BOOL
 
 %token TINT     /* int */
 %token TVOID    /* void */
@@ -55,6 +54,7 @@ let loc (startpos:Lexing.position) (endpos:Lexing.position) (elt:'a) : 'a node =
 %token SHIFTR
 %token SHIFTRAR
 %token TBOOL /*bool?*/
+%token LRBRACKET
 
 
 %left BITOR
@@ -69,7 +69,7 @@ let loc (startpos:Lexing.position) (endpos:Lexing.position) (elt:'a) : 'a node =
 
 %nonassoc BANG
 %nonassoc TILDE
-%nonassoc LBRACKET
+%nonassoc LBRACKET 
 %nonassoc LPAREN
 
 /* ---------------------------------------------------------------------- */
@@ -116,7 +116,7 @@ ty:
 
 %inline rtyp:
   | TSTRING { RString }
-  | t=ty LBRACKET RBRACKET { RArray t }
+  | t=ty LRBRACKET { RArray t }
 
 %inline bop:
   | PLUS   { Add }
@@ -147,7 +147,7 @@ gexp:
   | s=STRING      { loc $startpos $endpos @@ CStr s}
   | FALSE         { loc $startpos $endpos @@ CBool false}
   | TRUE          { loc $startpos $endpos @@ CBool true}
-  | NEW t=ty LBRACE gs=separated_list(COMMA,gexp)
+  | NEW t=ty LRBRACKET LBRACE gs=separated_list(COMMA,gexp) RBRACE
                   { loc $startpos $endpos @@ CArr (t,gs)}
 
 lhs:  
@@ -169,11 +169,11 @@ exp:
   | s= STRING           { loc $startpos $endpos @@ CStr s}
   | FALSE               { loc $startpos $endpos @@ CBool false}
   | TRUE                {loc $startpos $endpos @@ CBool true}
-  | NEW t=ty LBRACKET  RBRACKET LBRACE  es=separated_list(COMMA,  exp) RBRACE 
+  | NEW t=ty LRBRACKET LBRACE  es=separated_list(COMMA,  exp) RBRACE 
                         { loc $startpos $endpos @@ CArr (t,es)}
-  | NEW BOOL LBRACKET e=exp RBRACKET
-                        { loc $startpos $endpos @@ NewArr (TBool,e)}
-  | NEW INT LBRACKET e=exp RBRACKET   
+  | NEW TBOOL LBRACKET e=exp RBRACKET
+                        { loc $startpos $endpos @@ NewArr (TBool, e)}
+  | NEW TINT LBRACKET e=exp RBRACKET   
                         { loc $startpos $endpos @@ NewArr (TInt, e)}
 vdecl:
   | VAR id=IDENT EQ init=exp { (id, init) }
@@ -191,8 +191,10 @@ stmt:
   | RETURN e=exp SEMI   { loc $startpos $endpos @@ Ret(Some e) }
   | WHILE LPAREN e=exp RPAREN b=block  
                         { loc $startpos $endpos @@ While(e, b) }
-  | FOR LPAREN d=vdecls SEMI e=exp SEMI s=stmt RPAREN b=block
-                        { loc $startpos $endpos @@ For(d,Some e,Some s,b)}
+  | FOR LPAREN d=vdecls SEMI e=option (exp) SEMI s=option(stmt) RPAREN b=block
+                        { loc $startpos $endpos @@ For(d,e,s,b)}
+  
+  
 
 block:
   | LBRACE stmts=list(stmt) RBRACE { stmts }
