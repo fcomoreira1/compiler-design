@@ -1,1 +1,1 @@
-let global_prefix = "/home/student/"
+let global_prefix = "/home/fcomoreira/bachelor/ETH/compilers/compilersdesign/"

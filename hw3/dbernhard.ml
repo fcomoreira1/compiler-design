@@ -18,4 +18,4 @@ let dbernhard_tests = [
   ; prefix ^ "gep_inside_struct.ll", 42L (* index inside a struct which contains an array *)
   ; prefix ^ "gep_inside_struct_array.ll", 11L (* index inside an array which is inside a struct *)
   ; prefix ^ "gep_twice.ll", 199L
-*)]
+]
