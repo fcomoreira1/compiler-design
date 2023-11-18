@@ -338,15 +338,27 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
   | CNull t -> (cmp_rty t, Null, [])
   | CBool b -> (I1, Const (if b then 1L else 0L), [])
   | CInt i -> (I64, Const i, [])
+  | Id id -> let t, op  = Ctxt.lookup id c in 
+      (t, op, [])
+  | Call(e, exps) -> 
+      let t, op, str_exp = cmp_exp c e in
+      let f_args, str_alloc = List.fold_left (fun (args, str) e-> 
+        let t, op, str_e =  cmp_exp c e in
+        let arg_var = gensym "arg" in
+        (
+          [(Ptr t, Ll.Id arg_var)] >@ args, 
+          [I("", Store(t, op, Id arg_var))] >@ str_e >@ str
+        )
+      ) ([], []) exps in
+      (Ll.Void, Null, str_exp >@ str_alloc >@ [I("", Call(t, op, f_args))])
   | Bop (b, e1, e2) ->
-      print_endline "Bop";
       let t1, op1, str1 = cmp_exp c e1 in
       let t2, op2, str2 = cmp_exp c e2 in
       let aux_var = gensym "aux" in
       let _, _, bop_t = typ_of_binop b in
       ( cmp_ty bop_t,
         Id aux_var,
-        str1 @ str2 @ [ I (aux_var, insn_of_binop b bop_t op1 op2) ] )
+        str1 >@ str2 >@ [ I (aux_var, insn_of_binop b bop_t op1 op2) ] )
   | Uop (uop, e) ->
       let t, op, str = cmp_exp c e in
       let aux_var = gensym "aux" in
@@ -385,16 +397,28 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
 let rec cmp_stmt (c : Ctxt.t) (rt : Ll.ty) (stmt : Ast.stmt node) :
     Ctxt.t * stream =
   match stmt.elt with
-  | Assn (exp1, exp2) -> failwith "Not Implemented"
-  | Decl (id, exp) -> failwith "Not Implemented"
+  | Assn (exp1, exp2) -> 
+      let t2, op2, str2 = cmp_exp c exp2 in
+      begin match exp1.elt with
+      | Id(id) -> 
+        let t1, op1 = Ctxt.lookup id c in
+        (c, str2 >@ [ I ("", Store (t1, op2, op1)) ])
+      | _ -> failwith "Ill formed LHS"
+      end
+  | Decl (id, exp) ->
+      let t, op, str = cmp_exp c exp in
+      let ll_id = gensym id in
+      ( Ctxt.add c id (t, Id ll_id),
+        str >@ [ E (ll_id, Alloca t) ] >@ [ I ("", Store (t, op, Id ll_id)) ] )
   | Ret exp -> (
       match exp with
       | None -> (c, [ T (Ret (rt, None)) ])
       | Some e ->
           let _, op, str = cmp_exp c e in
-          let () = print_int (List.length str) in
-          (c, str @ [ T (Ret (rt, Option.some op)) ]))
-  | SCall (e, exps) -> failwith "Not Implemented"
+          (c, str >@ [ T (Ret (rt, Option.some op)) ]))
+  | SCall (e, exps) -> 
+      let _, _, str = cmp_exp c (no_loc (Call(e, exps))) in
+      c, str
   | If (e, st1, st2) -> failwith "Not Implemented"
   | For (v_list, e, st1, st2) -> failwith "Not Implemented"
   | While (e, sts) -> failwith "Not Implemented"
@@ -475,7 +499,6 @@ let cmp_fdecl (c : Ctxt.t) (f : Ast.fdecl node) :
   in
   let f_ctxt, f_args_stream = cmp_fdecl_args c f.elt.args in
   let _, f_body_stream = cmp_block f_ctxt f_rty f.elt.body in
-  print_int (List.length f_body_stream);
   let f_cfg, l_global = cfg_of_stream (f_args_stream @ f_body_stream) in
   ({ f_ty = (f_ty, f_rty); f_param; f_cfg }, l_global)
 
@@ -534,6 +557,7 @@ let cmp_prog (p : Ast.prog) : Ll.prog =
 
   (* build global variable context *)
   let c = cmp_global_ctxt fc p in
+
   (* let () = List.iter (fun (id, _) -> print_endline id) c in *)
 
   (* compile functions and global variables *)
