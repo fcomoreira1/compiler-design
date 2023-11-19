@@ -380,7 +380,7 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
       let _, uop_t = typ_of_unop uop in
       ( cmp_ty uop_t,
         Id aux_var,
-        str >@ [ I (aux_var, Binop (Sub, cmp_ty uop_t, Const 0L, op)) ] )
+        str >@ [ I (aux_var, insn_of_unop uop uop_t op) ] )
   | _ -> failwith "Not Implemented"
 
 (* Compile a statement in context c with return typ rt. Return a new context,
