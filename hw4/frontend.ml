@@ -304,19 +304,20 @@ let oat_alloc_array (t : Ast.ty) (size : Ll.operand) : Ll.ty * operand * stream
      (CArr) and the (NewArr) expressions
 *)
 
-let insn_of_binop (b : binop) (t : ty) (op1 : Ll.operand) (op2 : Ll.operand) :
+let insn_of_binop (b : binop) (t1 : ty) (rt : ty) (op1 : Ll.operand) (op2 : Ll.operand) :
     insn =
-  let t = cmp_ty t in
+    let t1 = cmp_ty t1 in 
+  let t = cmp_ty rt in
   match b with
   | Add -> Binop (Add, t, op1, op2)
   | Sub -> Binop (Sub, t, op1, op2)
   | Mul -> Binop (Mul, t, op1, op2)
-  | Eq -> Icmp (Eq, t, op1, op2)
-  | Neq -> Icmp (Ne, t, op1, op2)
-  | Lt -> Icmp (Slt, t, op1, op2)
-  | Lte -> Icmp (Sle, t, op1, op2)
-  | Gt -> Icmp (Sgt, t, op1, op2)
-  | Gte -> Icmp (Sge, t, op1, op2)
+  | Eq -> Icmp (Eq, t1, op1, op2)
+  | Neq -> Icmp (Ne, t1, op1, op2)
+  | Lt -> Icmp (Slt, t1, op1, op2)
+  | Lte -> Icmp (Sle, t1, op1, op2)
+  | Gt -> Icmp (Sgt, t1, op1, op2)
+  | Gte -> Icmp (Sge, t1, op1, op2)
   | And -> Binop (And, t, op1, op2)
   | Or -> Binop (Or, t, op1, op2)
   | IAnd -> Binop (And, t, op1, op2)
@@ -369,10 +370,10 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
       let t1, op1, str1 = cmp_exp c e1 in
       let t2, op2, str2 = cmp_exp c e2 in
       let aux_var = gensym "aux" in
-      let _, _, bop_t = typ_of_binop b in
-      ( cmp_ty bop_t,
+      let bop_t, _, bop_rt = typ_of_binop b in
+      ( cmp_ty bop_rt,
         Id aux_var,
-        str1 >@ str2 >@ [ I (aux_var, insn_of_binop b bop_t op1 op2) ] )
+        str1 >@ str2 >@ [ I (aux_var, insn_of_binop b bop_t bop_rt op1 op2) ] )
   | Uop (uop, e) ->
       let t, op, str = cmp_exp c e in
       let aux_var = gensym "aux" in
