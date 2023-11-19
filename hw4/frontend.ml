@@ -304,9 +304,9 @@ let oat_alloc_array (t : Ast.ty) (size : Ll.operand) : Ll.ty * operand * stream
      (CArr) and the (NewArr) expressions
 *)
 
-let insn_of_binop (b : binop) (t1 : ty) (rt : ty) (op1 : Ll.operand) (op2 : Ll.operand) :
-    insn =
-    let t1 = cmp_ty t1 in 
+let insn_of_binop (b : binop) (t1 : ty) (rt : ty) (op1 : Ll.operand)
+    (op2 : Ll.operand) : insn =
+  let t1 = cmp_ty t1 in
   let t = cmp_ty rt in
   match b with
   | Add -> Binop (Add, t, op1, op2)
@@ -339,12 +339,50 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
   | CNull t -> (cmp_rty t, Null, [])
   | CBool b -> (I1, Const (if b then 1L else 0L), [])
   | CInt i -> (I64, Const i, [])
+  | CArr (t_el_arr, e_list) ->
+      let t_arr, op_arr, str_arr =
+        cmp_exp c
+          (Ast.no_loc
+             (NewArr
+                (t_el_arr, Ast.no_loc (CInt (Int64.of_int (List.length e_list))))))
+      in
+      let str_alloc =
+        List.concat
+          (List.mapi
+             (fun i e : stream ->
+               let t_e, op_e, str_e = cmp_exp c e in
+               let alloc_aux = gensym "al_aux" in
+               str_e
+               >@ [
+                    I
+                      ( alloc_aux,
+                        Gep (Ptr (cmp_ty t_el_arr), op_arr, [ Const (Int64.of_int i) ])
+                      );
+                  ]
+               >@ [ I ("", Store (cmp_ty t_el_arr, op_e, Id alloc_aux)) ])
+             e_list)
+      in
+      (t_arr, op_arr, str_arr >@ str_alloc)
+  | NewArr (t, e) ->
+      let t_e, op_e, str_e = cmp_exp c e in
+      let t_array, op_arr, str_arr = oat_alloc_array t op_e in
+      (t_array, op_arr, str_e >@ str_arr)
   | Id id -> (
       let t, op = Ctxt.lookup id c in
       let aux_var = gensym "aux" in
       match t with
       | Ptr t -> (t, Id aux_var, [ I (aux_var, Load (Ptr t, op)) ])
       | _ -> (t, op, []))
+  | Index (e1, e2) ->
+      let t1, op1, str1 = cmp_exp c e1 in
+      let t2, op2, str2 = cmp_exp c e2 in
+      let aux_var = gensym "gep_aux" in
+      let index_aux = gensym "index_aux" in
+      ( t1,
+        Id index_aux,
+        str1 >@ str2
+        >@ [ I (aux_var, Gep (t1, op1, [ op2 ])) ]
+        >@ [ I (index_aux, Load (t2, Id aux_var)) ] )
   | Call (e, exps) ->
       let f_id =
         match e.elt with Id id -> id | _ -> failwith "Cannot call this var"
@@ -357,11 +395,7 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
         List.fold_left
           (fun (args, str) e ->
             let t, op, str_e = cmp_exp c e in
-            let arg_var = gensym "arg" in
-            ( [ (Ptr t, Ll.Id arg_var) ] >@ args,
-              str_e
-              >@ [ I ("", Store (t, op, Id arg_var)); I (arg_var, Alloca t) ]
-              >@ str ))
+            ([ (t, op) ] >@ args, str_e >@ str))
           ([], []) exps
       in
       let res = gensym "res" in
@@ -418,6 +452,14 @@ let rec cmp_stmt (c : Ctxt.t) (rt : Ll.ty) (stmt : Ast.stmt node) :
       | Id id ->
           let t1, op1 = Ctxt.lookup id c in
           (c, str2 >@ [ I ("", Store (t2, op2, op1)) ])
+      | Index (e1, e2) ->
+          let t1, op1, str1 = cmp_exp c e1 in
+          let t2, op2, str2 = cmp_exp c e2 in
+          let aux_var = gensym "gep_aux" in
+          ( c,
+            str1 >@ str2
+            >@ [ I (aux_var, Gep (t1, op1, [ op2 ])) ]
+            >@ [ I ("", Store (t2, op2, Id aux_var)) ] )
       | _ -> failwith "Ill formed LHS")
   | Decl (id, exp) ->
       let t, op, str = cmp_exp c exp in
@@ -433,56 +475,58 @@ let rec cmp_stmt (c : Ctxt.t) (rt : Ll.ty) (stmt : Ast.stmt node) :
   | SCall (e, exps) ->
       let _, _, str = cmp_exp c (no_loc (Call (e, exps))) in
       (c, str)
-  | If (e, st1, st2) -> 
-    let t, op, str = cmp_exp c e in
-    let if_label = gensym "if" in
-    let else_label = gensym "else" in
-    let fi_label = gensym "fi" in
-    let str = str >@ [ T (Cbr (op, if_label, else_label)) ] in
-    let rec cmp_stmts c rt stmts = 
-    begin match stmts with
-    | [] -> (c, [])
-    | hd :: tl -> 
-        let c', s' = cmp_stmt c rt hd in
-        let c'', s'' = cmp_stmts c' rt tl in
-        (c'', s' >@ s'')
-    end in
-    let c, str_st1 = cmp_stmts c rt st1 in
-    let c, str_st2 = cmp_stmts c rt st2 in
-    let str_st1_c = [L if_label] >@ str_st1 >@ [T (Br fi_label)] in
-    let str_st2_c = [L else_label] >@ str_st2 >@ [T (Br fi_label)] in
-    c, str >@ str_st1_c >@ str_st2_c >@ [L fi_label]
-  | For (v_list, e, st1, st2) -> 
-      let e = match e with Some e -> e | None -> Ast.no_loc (CInt 1L) in
-      let rec cmp_vdecls c (v_list: vdecl list) = 
-        begin match v_list with
+  | If (e, st1, st2) ->
+      let t, op, str = cmp_exp c e in
+      let if_label = gensym "if" in
+      let else_label = gensym "else" in
+      let fi_label = gensym "fi" in
+      let str = str >@ [ T (Cbr (op, if_label, else_label)) ] in
+      let rec cmp_stmts c rt stmts =
+        match stmts with
         | [] -> (c, [])
-        | hd :: tl -> 
-          let c, str = cmp_stmt c rt (Ast.no_loc (Decl hd)) in
-          let c', s' = cmp_vdecls c tl in
-          (c', str >@ s')
-        end in
+        | hd :: tl ->
+            let c', s' = cmp_stmt c rt hd in
+            let c'', s'' = cmp_stmts c' rt tl in
+            (c'', s' >@ s'')
+      in
+      let c, str_st1 = cmp_stmts c rt st1 in
+      let c, str_st2 = cmp_stmts c rt st2 in
+      let str_st1_c = [ L if_label ] >@ str_st1 >@ [ T (Br fi_label) ] in
+      let str_st2_c = [ L else_label ] >@ str_st2 >@ [ T (Br fi_label) ] in
+      (c, str >@ str_st1_c >@ str_st2_c >@ [ L fi_label ])
+  | For (v_list, e, st1, st2) ->
+      let e = match e with Some e -> e | None -> Ast.no_loc (CInt 1L) in
+      let rec cmp_vdecls c (v_list : vdecl list) =
+        match v_list with
+        | [] -> (c, [])
+        | hd :: tl ->
+            let c, str = cmp_stmt c rt (Ast.no_loc (Decl hd)) in
+            let c', s' = cmp_vdecls c tl in
+            (c', str >@ s')
+      in
       let c, str_vdecls = cmp_vdecls c v_list in
-      let body_stmt = match st1 with Some s -> [s] >@ st2 | None -> st2 in
-      let c, str_loop = cmp_stmt c rt (Ast.no_loc (While(e, body_stmt))) in
+      let body_stmt = match st1 with Some s -> [ s ] >@ st2 | None -> st2 in
+      let c, str_loop = cmp_stmt c rt (Ast.no_loc (While (e, body_stmt))) in
       (c, str_vdecls >@ str_loop)
-  | While (e, sts) -> 
-    let t, op, str = cmp_exp c e in
-    let cond_label = gensym "cond" in
-    let body_label = gensym "body" in
-    let end_label = gensym "end" in
-    let cond_str = [L cond_label] >@ str >@ [ T (Cbr (op, body_label, end_label)) ] in
-    let rec cmp_stmts c rt stmts = 
-    begin match stmts with
-    | [] -> (c, [])
-    | hd :: tl -> 
-        let c', s' = cmp_stmt c rt hd in
-        let c'', s'' = cmp_stmts c' rt tl in
-        (c'', s' >@ s'')
-    end in
-    let c, body_str = cmp_stmts c rt sts in
-    let body_str = [L body_label] >@ body_str >@ [T (Br cond_label)] in
-    c, [T (Br cond_label)] >@ cond_str >@ body_str >@ [L end_label]
+  | While (e, sts) ->
+      let t, op, str = cmp_exp c e in
+      let cond_label = gensym "cond" in
+      let body_label = gensym "body" in
+      let end_label = gensym "end" in
+      let cond_str =
+        [ L cond_label ] >@ str >@ [ T (Cbr (op, body_label, end_label)) ]
+      in
+      let rec cmp_stmts c rt stmts =
+        match stmts with
+        | [] -> (c, [])
+        | hd :: tl ->
+            let c', s' = cmp_stmt c rt hd in
+            let c'', s'' = cmp_stmts c' rt tl in
+            (c'', s' >@ s'')
+      in
+      let c, body_str = cmp_stmts c rt sts in
+      let body_str = [ L body_label ] >@ body_str >@ [ T (Br cond_label) ] in
+      (c, [ T (Br cond_label) ] >@ cond_str >@ body_str >@ [ L end_label ])
 
 (* Compile a series of statements *)
 and cmp_block (c : Ctxt.t) (rt : Ll.ty) (stmts : Ast.block) : Ctxt.t * stream =
@@ -538,28 +582,24 @@ let cmp_global_ctxt (c : Ctxt.t) (p : Ast.prog) : Ctxt.t =
    4. Compile the body of the function using cmp_block
    5. Use cfg_of_stream to produce a LLVMlite cfg from
 *)
+let rec cmp_fdecl_args (c : Ctxt.t) (args : (ty * id) list) : Ctxt.t * stream =
+  match args with
+  | [] -> (c, [])
+  | (t, id) :: tl ->
+      let genid = gensym id in
+      (* let _, ll_id = Ctxt.lookup id c in *)
+      let alloca = E (genid, Alloca (cmp_ty t)) in
+      let store = I ("", Store (cmp_ty t, Id id, Id genid)) in
+      let c', str =
+        cmp_fdecl_args (Ctxt.add c id (Ptr (cmp_ty t), Id genid)) tl
+      in
+      (c', [ alloca ] >@ [ store ] >@ str)
 
 let cmp_fdecl (c : Ctxt.t) (f : Ast.fdecl node) :
     Ll.fdecl * (Ll.gid * Ll.gdecl) list =
   let f_rty = cmp_ret_ty f.elt.frtyp in
-  let f_ty = List.map (fun (t, _) -> Ptr (cmp_ty t)) f.elt.args in
+  let f_ty = List.map (fun (t, _) -> cmp_ty t) f.elt.args in
   let f_param = List.map (fun (_, id) -> id) f.elt.args in
-  let rec cmp_fdecl_args (c : Ctxt.t) (args : (ty * id) list) : Ctxt.t * stream
-      =
-    match args with
-    | [] -> (c, [])
-    | (t, id) :: tl ->
-        let genid = gensym id in
-        (* let _, ll_id = Ctxt.lookup id c in *)
-        let aux_var_id = gensym "aux" in
-        let alloca = E (genid, Alloca (cmp_ty t)) in
-        let load = I (aux_var_id, Load (Ptr (cmp_ty t), Id id)) in
-        let store = I ("", Store (cmp_ty t, Id aux_var_id, Id genid)) in
-        let c', str =
-          cmp_fdecl_args (Ctxt.add c id (Ptr (cmp_ty t), Id genid)) tl
-        in
-        (c', [ alloca ] >@ [ load ] >@ [ store ] >@ str)
-  in
   let f_ctxt, f_args_stream = cmp_fdecl_args c f.elt.args in
   let _, f_body_stream = cmp_block f_ctxt f_rty f.elt.body in
   let f_cfg, l_global = cfg_of_stream (f_args_stream >@ f_body_stream) in
@@ -583,8 +623,10 @@ let rec cmp_gexp (c : Ctxt.t) (e : Ast.exp node) :
   | CNull t -> ((Ptr (cmp_rty t), GNull), [])
   | CBool b -> ((I1, GInt (if b then 1L else 0L)), [])
   | CInt i -> ((I64, GInt i), [])
-  | CStr s -> failwith "Not implemented"
-  | CArr (t, es) -> failwith "Not implemented"
+  | CStr s -> ((Ptr I8, GString s), [])
+  | CArr (t, es) ->
+      let arr_init = List.map (fun (e : exp node) -> fst (cmp_gexp c e)) es in
+      ((Ptr (cmp_ty t), GArray arr_init), [])
   | _ ->
       Astlib.print_exp e;
       failwith "Invalid global initializer"
