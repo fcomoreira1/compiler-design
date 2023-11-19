@@ -352,14 +352,15 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
              (fun i e : stream ->
                let t_e, op_e, str_e = cmp_exp c e in
                let alloc_aux = gensym "al_aux" in
+               let bit_aux = gensym "bit_aux" in
                str_e
                >@ [
                     I
                       ( alloc_aux,
-                        Gep (Ptr (cmp_ty t_el_arr), op_arr, [ Const (Int64.of_int i) ])
-                      );
+                        Gep (t_arr, op_arr, [ Const (Int64.of_int (i+1)) ]) );
                   ]
-               >@ [ I ("", Store (cmp_ty t_el_arr, op_e, Id alloc_aux)) ])
+               >@ [ I (bit_aux, Bitcast (t_arr, Id alloc_aux, Ptr t_e)) ]
+               >@ [ I ("", Store (t_e, op_e, Id bit_aux)) ])
              e_list)
       in
       (t_arr, op_arr, str_arr >@ str_alloc)
@@ -372,18 +373,22 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
       let aux_var = gensym "aux" in
       match t with
       | Ptr t -> (t, Id aux_var, [ I (aux_var, Load (Ptr t, op)) ])
-      | _ -> (t, op, []))
-  | Index (e1, e2) ->
+      | _ -> failwith "Id should be ptr")
+  | Index (e1, e2) -> (
       let t1, op1, str1 = cmp_exp c e1 in
-      let t2, op2, str2 = cmp_exp c e2 in
+      let t2, op2, str2 = cmp_exp c (Ast.no_loc (Bop(Add, e2, Ast.no_loc (CInt 1L))))in
       let aux_var = gensym "gep_aux" in
       let index_aux = gensym "index_aux" in
-      let t = match t1 with Ptr t -> t | _ -> failwith "Not a pointer being indexed" in
-      ( t,
-        Id index_aux,
-        str1 >@ str2
-        >@ [ I (aux_var, Gep (t1, op1, [ op2 ])) ]
-        >@ [ I (index_aux, Load (t, Id aux_var)) ] )
+      let index_res = gensym "index_res" in
+      match t1 with
+      | Ptr (Struct [ _; Array (_, t_arr) ]) ->
+          ( t_arr,
+            Id index_res,
+            str1 >@ str2
+            >@ [ I (aux_var, Bitcast (t1, op1, Ptr t_arr)) ]
+            >@ [ I (index_aux, Gep (Ptr t_arr, Id aux_var, [ op2 ])) ]
+            >@ [ I (index_res, Load (Ptr t_arr, Id index_aux)) ] )
+      | _ -> failwith "just dont")
   | Call (e, exps) ->
       let f_id =
         match e.elt with Id id -> id | _ -> failwith "Cannot call this var"
@@ -448,19 +453,26 @@ let rec cmp_stmt (c : Ctxt.t) (rt : Ll.ty) (stmt : Ast.stmt node) :
     Ctxt.t * stream =
   match stmt.elt with
   | Assn (exp1, exp2) -> (
-      let t2, op2, str2 = cmp_exp c exp2 in
+      let t2, op_rhs, str_rhs = cmp_exp c exp2 in
       match exp1.elt with
       | Id id ->
           let t1, op1 = Ctxt.lookup id c in
-          (c, str2 >@ [ I ("", Store (t2, op2, op1)) ])
+          (c, str_rhs >@ [ I ("", Store (t2, op_rhs, op1)) ])
       | Index (e1, e2) ->
           let t1, op1, str1 = cmp_exp c e1 in
-          let t2, op2, str2 = cmp_exp c e2 in
+          let t2, op2, str2 = cmp_exp c (Ast.no_loc (Bop(Add, e2, Ast.no_loc (CInt 1L))))in
           let aux_var = gensym "gep_aux" in
+          let index_aux = gensym "index_aux" in
+          let t_arr =
+            match t1 with
+            | Ptr (Struct [ _; Array (_, t) ]) -> t
+            | _ -> failwith "Not a pointer being indexed"
+          in
           ( c,
-            str1 >@ str2
+            str_rhs >@ str1 >@ str2
             >@ [ I (aux_var, Gep (t1, op1, [ op2 ])) ]
-            >@ [ I ("", Store (t2, op2, Id aux_var)) ] )
+            >@ [ I (index_aux, Bitcast (t1, Id aux_var, Ptr t_arr)) ]
+            >@ [ I ("", Store (t2, op_rhs, Id index_aux)) ] )
       | _ -> failwith "Ill formed LHS")
   | Decl (id, exp) ->
       let t, op, str = cmp_exp c exp in
@@ -566,8 +578,9 @@ let cmp_global_ctxt (c : Ctxt.t) (p : Ast.prog) : Ctxt.t =
             | CNull t -> (Ptr (cmp_rty t), Gid name)
             | CBool _ -> (Ptr I1, Gid name)
             | CInt _ -> (Ptr I64, Gid name)
-            | CStr _ -> (Ptr (Ptr I8), Gid name)
-            | CArr (t, _) -> (Ptr (Ptr (cmp_ty t)), Gid name)
+            | CStr s -> (Ptr(Ptr (Array (1 + String.length s, I8))), Gid name)
+            | CArr (t, e) ->
+                (Ptr (Ptr (Struct [ I64; Array (List.length e, cmp_ty t) ])), Gid name)
             | _ -> failwith "Invalid global initializer")
       | _ -> c)
     c p
@@ -624,10 +637,22 @@ let rec cmp_gexp (c : Ctxt.t) (e : Ast.exp node) :
   | CNull t -> ((Ptr (cmp_rty t), GNull), [])
   | CBool b -> ((I1, GInt (if b then 1L else 0L)), [])
   | CInt i -> ((I64, GInt i), [])
-  | CStr s -> ((Ptr I8, GString s), [])
+  | CStr s -> let str_aux = gensym "str_aux" in
+    ((Ptr (Array (1 + String.length s, I8)), GGid str_aux), [str_aux ,(Array (1 + String.length s, I8), GString s)])
   | CArr (t, es) ->
+      let arr_aux = gensym "arr_aux" in
       let arr_init = List.map (fun (e : exp node) -> fst (cmp_gexp c e)) es in
-      ((Ptr (cmp_ty t), GArray arr_init), [])
+      let n = List.length arr_init in
+      ( (Ptr (Struct [ I64; Array (n, cmp_ty t) ]), GGid arr_aux),
+        [
+          ( arr_aux,
+            ( Struct [ I64; Array (n, cmp_ty t) ],
+              GStruct
+                [
+                  (I64, GInt (Int64.of_int n));
+                  (Array (n, cmp_ty t), GArray arr_init);
+                ] ) );
+        ] )
   | _ ->
       Astlib.print_exp e;
       failwith "Invalid global initializer"
