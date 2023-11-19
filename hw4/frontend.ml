@@ -338,19 +338,33 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
   | CNull t -> (cmp_rty t, Null, [])
   | CBool b -> (I1, Const (if b then 1L else 0L), [])
   | CInt i -> (I64, Const i, [])
-  | Id id -> let t, op  = Ctxt.lookup id c in 
-      (t, op, [])
-  | Call(e, exps) -> 
-      let t, op, str_exp = cmp_exp c e in
-      let f_args, str_alloc = List.fold_left (fun (args, str) e-> 
-        let t, op, str_e =  cmp_exp c e in
-        let arg_var = gensym "arg" in
-        (
-          [(Ptr t, Ll.Id arg_var)] >@ args, 
-          [I("", Store(t, op, Id arg_var))] >@ str_e >@ str
-        )
-      ) ([], []) exps in
-      (Ll.Void, Null, str_exp >@ str_alloc >@ [I("", Call(t, op, f_args))])
+  | Id id -> (
+      let t, op = Ctxt.lookup id c in
+      let aux_var = gensym "aux" in
+      match t with
+      | Ptr t -> (t, Id aux_var, [ I (aux_var, Load (Ptr t, op)) ])
+      | _ -> (t, op, []))
+  | Call (e, exps) ->
+      let f_id =
+        match e.elt with Id id -> id | _ -> failwith "Cannot call this var"
+      in
+      let t, op = Ctxt.lookup_function f_id c in
+      let t_ret =
+        match t with Ptr (Fun (_, t)) -> t | _ -> failwith "Not a fun"
+      in
+      let f_args, str_alloc =
+        List.fold_left
+          (fun (args, str) e ->
+            let t, op, str_e = cmp_exp c e in
+            let arg_var = gensym "arg" in
+            ( [ (Ptr t, Ll.Id arg_var) ] >@ args,
+              str_e
+              >@ [ I ("", Store (t, op, Id arg_var)); I (arg_var, Alloca t) ]
+              >@ str ))
+          ([], []) exps
+      in
+      let res = gensym "res" in
+      (t_ret, Id res, str_alloc >@ [ I (res, Call (t_ret, op, f_args)) ])
   | Bop (b, e1, e2) ->
       let t1, op1, str1 = cmp_exp c e1 in
       let t2, op2, str2 = cmp_exp c e2 in
@@ -365,7 +379,7 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
       let _, uop_t = typ_of_unop uop in
       ( cmp_ty uop_t,
         Id aux_var,
-        str @ [ I (aux_var, Binop (Sub, cmp_ty uop_t, Const 0L, op)) ] )
+        str >@ [ I (aux_var, Binop (Sub, cmp_ty uop_t, Const 0L, op)) ] )
   | _ -> failwith "Not Implemented"
 
 (* Compile a statement in context c with return typ rt. Return a new context,
@@ -380,7 +394,7 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
    - for local variable declarau will need to emit Allocas in the
      entry block of the current function using the E() constructor.
 
-   - don't forget to add a bindings to the context for local variable
+   - don't forget to add a league of legenabindings to the context for local variable
      declarations
 
    - you can avoid some work by translating For loops to the corresponding
@@ -397,18 +411,17 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
 let rec cmp_stmt (c : Ctxt.t) (rt : Ll.ty) (stmt : Ast.stmt node) :
     Ctxt.t * stream =
   match stmt.elt with
-  | Assn (exp1, exp2) -> 
+  | Assn (exp1, exp2) -> (
       let t2, op2, str2 = cmp_exp c exp2 in
-      begin match exp1.elt with
-      | Id(id) -> 
-        let t1, op1 = Ctxt.lookup id c in
-        (c, str2 >@ [ I ("", Store (t1, op2, op1)) ])
-      | _ -> failwith "Ill formed LHS"
-      end
+      match exp1.elt with
+      | Id id ->
+          let t1, op1 = Ctxt.lookup id c in
+          (c, str2 >@ [ I ("", Store (t2, op2, op1)) ])
+      | _ -> failwith "Ill formed LHS")
   | Decl (id, exp) ->
       let t, op, str = cmp_exp c exp in
       let ll_id = gensym id in
-      ( Ctxt.add c id (t, Id ll_id),
+      ( Ctxt.add c id (Ptr t, Id ll_id),
         str >@ [ E (ll_id, Alloca t) ] >@ [ I ("", Store (t, op, Id ll_id)) ] )
   | Ret exp -> (
       match exp with
@@ -416,12 +429,59 @@ let rec cmp_stmt (c : Ctxt.t) (rt : Ll.ty) (stmt : Ast.stmt node) :
       | Some e ->
           let _, op, str = cmp_exp c e in
           (c, str >@ [ T (Ret (rt, Option.some op)) ]))
-  | SCall (e, exps) -> 
-      let _, _, str = cmp_exp c (no_loc (Call(e, exps))) in
-      c, str
-  | If (e, st1, st2) -> failwith "Not Implemented"
-  | For (v_list, e, st1, st2) -> failwith "Not Implemented"
-  | While (e, sts) -> failwith "Not Implemented"
+  | SCall (e, exps) ->
+      let _, _, str = cmp_exp c (no_loc (Call (e, exps))) in
+      (c, str)
+  | If (e, st1, st2) -> 
+    let t, op, str = cmp_exp c e in
+    let if_label = gensym "if" in
+    let else_label = gensym "else" in
+    let fi_label = gensym "fi" in
+    let str = str >@ [ T (Cbr (op, if_label, else_label)) ] in
+    let rec cmp_stmts c rt stmts = 
+    begin match stmts with
+    | [] -> (c, [])
+    | hd :: tl -> 
+        let c', s' = cmp_stmt c rt hd in
+        let c'', s'' = cmp_stmts c' rt tl in
+        (c'', s' >@ s'')
+    end in
+    let c, str_st1 = cmp_stmts c rt st1 in
+    let c, str_st2 = cmp_stmts c rt st2 in
+    let str_st1_c = [L if_label] >@ str_st1 >@ [T (Br fi_label)] in
+    let str_st2_c = [L else_label] >@ str_st2 >@ [T (Br fi_label)] in
+    c, str >@ str_st1_c >@ str_st2_c >@ [L fi_label]
+  | For (v_list, e, st1, st2) -> 
+      let e = match e with Some e -> e | None -> Ast.no_loc (CInt 1L) in
+      let rec cmp_vdecls c (v_list: vdecl list) = 
+        begin match v_list with
+        | [] -> (c, [])
+        | hd :: tl -> 
+          let c, str = cmp_stmt c rt (Ast.no_loc (Decl hd)) in
+          let c', s' = cmp_vdecls c tl in
+          (c', str >@ s')
+        end in
+      let c, str_vdecls = cmp_vdecls c v_list in
+      let body_stmt = match st1 with Some s -> [s] >@ st2 | None -> st2 in
+      let c, str_loop = cmp_stmt c rt (Ast.no_loc (While(e, body_stmt))) in
+      (c, str_vdecls >@ str_loop)
+  | While (e, sts) -> 
+    let t, op, str = cmp_exp c e in
+    let cond_label = gensym "cond" in
+    let body_label = gensym "body" in
+    let end_label = gensym "end" in
+    let cond_str = [L cond_label] >@ str >@ [ T (Cbr (op, body_label, end_label)) ] in
+    let rec cmp_stmts c rt stmts = 
+    begin match stmts with
+    | [] -> (c, [])
+    | hd :: tl -> 
+        let c', s' = cmp_stmt c rt hd in
+        let c'', s'' = cmp_stmts c' rt tl in
+        (c'', s' >@ s'')
+    end in
+    let c, body_str = cmp_stmts c rt sts in
+    let body_str = [L body_label] >@ body_str >@ [T (Br cond_label)] in
+    c, [T (Br cond_label)] >@ cond_str >@ body_str >@ [L end_label]
 
 (* Compile a series of statements *)
 and cmp_block (c : Ctxt.t) (rt : Ll.ty) (stmts : Ast.block) : Ctxt.t * stream =
@@ -457,11 +517,11 @@ let cmp_global_ctxt (c : Ctxt.t) (p : Ast.prog) : Ctxt.t =
       | Ast.Gvdecl { elt = { name; init }; _ } ->
           Ctxt.add c name
             (match init.elt with
-            | CNull t -> (cmp_rty t, Gid name)
-            | CBool _ -> (I1, Gid name)
-            | CInt _ -> (I64, Gid name)
-            | CStr _ -> (Ptr I8, Gid name)
-            | CArr (t, _) -> (Ptr (cmp_ty t), Gid name)
+            | CNull t -> (Ptr (cmp_rty t), Gid name)
+            | CBool _ -> (Ptr I1, Gid name)
+            | CInt _ -> (Ptr I64, Gid name)
+            | CStr _ -> (Ptr (Ptr I8), Gid name)
+            | CArr (t, _) -> (Ptr (Ptr (cmp_ty t)), Gid name)
             | _ -> failwith "Invalid global initializer")
       | _ -> c)
     c p
@@ -481,7 +541,7 @@ let cmp_global_ctxt (c : Ctxt.t) (p : Ast.prog) : Ctxt.t =
 let cmp_fdecl (c : Ctxt.t) (f : Ast.fdecl node) :
     Ll.fdecl * (Ll.gid * Ll.gdecl) list =
   let f_rty = cmp_ret_ty f.elt.frtyp in
-  let f_ty = List.map (fun (t, _) -> cmp_ty t) f.elt.args in
+  let f_ty = List.map (fun (t, _) -> Ptr (cmp_ty t)) f.elt.args in
   let f_param = List.map (fun (_, id) -> id) f.elt.args in
   let rec cmp_fdecl_args (c : Ctxt.t) (args : (ty * id) list) : Ctxt.t * stream
       =
@@ -491,15 +551,17 @@ let cmp_fdecl (c : Ctxt.t) (f : Ast.fdecl node) :
         let genid = gensym id in
         (* let _, ll_id = Ctxt.lookup id c in *)
         let aux_var_id = gensym "aux" in
-        let alloca = I (genid, Alloca (cmp_ty t)) in
-        let load = I (aux_var_id, Load (cmp_ty t, Id id)) in
+        let alloca = E (genid, Alloca (cmp_ty t)) in
+        let load = I (aux_var_id, Load (Ptr (cmp_ty t), Id id)) in
         let store = I ("", Store (cmp_ty t, Id aux_var_id, Id genid)) in
-        let c', str = cmp_fdecl_args (Ctxt.add c id (cmp_ty t, Id genid)) tl in
-        (c', alloca :: load :: store :: str)
+        let c', str =
+          cmp_fdecl_args (Ctxt.add c id (Ptr (cmp_ty t), Id genid)) tl
+        in
+        (c', [ alloca ] >@ [ load ] >@ [ store ] >@ str)
   in
   let f_ctxt, f_args_stream = cmp_fdecl_args c f.elt.args in
   let _, f_body_stream = cmp_block f_ctxt f_rty f.elt.body in
-  let f_cfg, l_global = cfg_of_stream (f_args_stream @ f_body_stream) in
+  let f_cfg, l_global = cfg_of_stream (f_args_stream >@ f_body_stream) in
   ({ f_ty = (f_ty, f_rty); f_param; f_cfg }, l_global)
 
 (* Compile a global initializer, returning the resulting LLVMlite global
