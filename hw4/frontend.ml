@@ -378,11 +378,12 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
       let t2, op2, str2 = cmp_exp c e2 in
       let aux_var = gensym "gep_aux" in
       let index_aux = gensym "index_aux" in
-      ( t1,
+      let t = match t1 with Ptr t -> t | _ -> failwith "Not a pointer being indexed" in
+      ( t,
         Id index_aux,
         str1 >@ str2
         >@ [ I (aux_var, Gep (t1, op1, [ op2 ])) ]
-        >@ [ I (index_aux, Load (t2, Id aux_var)) ] )
+        >@ [ I (index_aux, Load (t, Id aux_var)) ] )
   | Call (e, exps) ->
       let f_id =
         match e.elt with Id id -> id | _ -> failwith "Cannot call this var"
