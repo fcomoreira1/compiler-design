@@ -333,6 +333,42 @@ let insn_of_unop (u : unop) (t : ty) (op : Ll.operand) : insn =
   | Lognot -> Binop (Xor, t, op, Const 1L)
   | Bitnot -> Binop (Xor, t, op, Const (-1L))
 
+(* Compile a type to a string. Useful for printing types in error messages *)
+let rec print_ast_ty_name (t : Ll.ty) : unit =
+  match t with
+  | Void -> print_string "void"
+  | I1 -> print_string "I1"
+  | I8 -> print_string "I8"
+  | I64 -> print_string "I64"
+  | Ptr t ->
+      print_string "Ptr(";
+      print_ast_ty_name t;
+      print_string ")"
+  | Struct tl ->
+      print_string "Struct(";
+      List.iter
+        (fun t ->
+          print_ast_ty_name t;
+          print_string ", ")
+        tl;
+      print_string ")"
+  | Array (i, t) ->
+      print_string "Array(";
+      print_int i;
+      print_string ", ";
+      print_ast_ty_name t;
+      print_string ")"
+  | Fun (tl, t) ->
+      print_string "Fun(";
+      List.iter
+        (fun t ->
+          print_ast_ty_name t;
+          print_string ", ")
+        tl;
+      print_ast_ty_name t;
+      print_string ")"
+  | Namedt _ -> print_string "tid"
+
 let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
     =
   match exp.elt with
@@ -362,17 +398,13 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
         >@ List.concat
              (List.mapi
                 (fun i e : stream ->
+                  let i = Int64.of_int i in
                   let t_e, op_e, str_e = cmp_exp c e in
                   let alloc_aux = gensym "al_aux" in
                   let bit_aux = gensym "bit_aux" in
                   str_e
                   >@ [ I (bit_aux, Bitcast (t_arr, Id skip_f_id, Ptr t_e)) ]
-                  >@ [
-                       I
-                         ( alloc_aux,
-                           Gep (Ptr t_e, Id bit_aux, [ Const (Int64.of_int i) ])
-                         );
-                     ]
+                  >@ [ I (alloc_aux, Gep (Ptr t_e, Id bit_aux, [ Const i ])) ]
                   >@ [ I ("", Store (t_e, op_e, Id alloc_aux)) ])
                 e_list)
       in
@@ -389,6 +421,7 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
       | _ -> failwith "Id should be ptr")
   | Index (e1, e2) -> (
       let t1, op1, str1 = cmp_exp c e1 in
+      let op1_id = match op1 with Id id -> id | _ -> "" in
       let t2, op2, str2 = cmp_exp c e2 in
       let skip_f_id = gensym "skip_f_id" in
       let aux_var = gensym "gep_aux" in
@@ -403,7 +436,13 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
             >@ [ I (aux_var, Bitcast (t1, Id skip_f_id, Ptr t_arr)) ]
             >@ [ I (index_aux, Gep (Ptr t_arr, Id aux_var, [ op2 ])) ]
             >@ [ I (index_res, Load (Ptr t_arr, Id index_aux)) ] )
-      | _ -> failwith "just dont")
+      | _ ->
+          print_string "Index";
+          print_endline op1_id;
+          print_ast_ty_name t1;
+          print_ast_ty_name t2;
+          print_endline "";
+          (t1, op1, str1))
   | Call (e, exps) ->
       let f_id =
         match e.elt with Id id -> id | _ -> failwith "Cannot call this var"
@@ -592,7 +631,7 @@ let cmp_global_ctxt (c : Ctxt.t) (p : Ast.prog) : Ctxt.t =
       | Ast.Gvdecl { elt = { name; init }; _ } ->
           Ctxt.add c name
             (match init.elt with
-            | CNull t -> (Ptr (cmp_rty t), Gid name)
+            | CNull t -> (Ptr (Ptr (cmp_rty t)), Gid name)
             | CBool _ -> (Ptr I1, Gid name)
             | CInt _ -> (Ptr I64, Gid name)
             | CStr s -> (Ptr (Ptr I8), Gid name)
