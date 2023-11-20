@@ -339,6 +339,16 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
   | CNull t -> (cmp_rty t, Null, [])
   | CBool b -> (I1, Const (if b then 1L else 0L), [])
   | CInt i -> (I64, Const i, [])
+  | CStr s ->
+      let str_id = gensym "str" in
+      let str_len = 1 + String.length s in
+      let str_gid_ty = Array (str_len, I8) in
+      let str_gid = gensym "str_gid" in
+      let str_ty = Ptr I8 in
+      ( str_ty,
+        Id str_id,
+        [ G (str_gid, (str_gid_ty, GString s)) ]
+        >@ [ I (str_id, Bitcast (Ptr str_gid_ty, Gid str_gid, str_ty)) ] )
   | CArr (t_el_arr, e_list) ->
       let t_arr, op_arr, str_arr =
         cmp_exp c
@@ -347,21 +357,24 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
                 (t_el_arr, Ast.no_loc (CInt (Int64.of_int (List.length e_list))))))
       in
       let str_alloc =
-        List.concat
-          (List.mapi
-             (fun i e : stream ->
-               let t_e, op_e, str_e = cmp_exp c e in
-               let alloc_aux = gensym "al_aux" in
-               let bit_aux = gensym "bit_aux" in
-               str_e
-               >@ [
-                    I
-                      ( alloc_aux,
-                        Gep (t_arr, op_arr, [ Const (Int64.of_int (i+1)) ]) );
-                  ]
-               >@ [ I (bit_aux, Bitcast (t_arr, Id alloc_aux, Ptr t_e)) ]
-               >@ [ I ("", Store (t_e, op_e, Id bit_aux)) ])
-             e_list)
+        let skip_f_id = gensym "skip_f_id" in
+        [ I (skip_f_id, Gep (t_arr, op_arr, [ Const 1L ])) ]
+        >@ List.concat
+             (List.mapi
+                (fun i e : stream ->
+                  let t_e, op_e, str_e = cmp_exp c e in
+                  let alloc_aux = gensym "al_aux" in
+                  let bit_aux = gensym "bit_aux" in
+                  str_e
+                  >@ [ I (bit_aux, Bitcast (t_arr, Id skip_f_id, Ptr t_e)) ]
+                  >@ [
+                       I
+                         ( alloc_aux,
+                           Gep (Ptr t_e, Id bit_aux, [ Const (Int64.of_int i) ])
+                         );
+                     ]
+                  >@ [ I ("", Store (t_e, op_e, Id alloc_aux)) ])
+                e_list)
       in
       (t_arr, op_arr, str_arr >@ str_alloc)
   | NewArr (t, e) ->
@@ -376,7 +389,8 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
       | _ -> failwith "Id should be ptr")
   | Index (e1, e2) -> (
       let t1, op1, str1 = cmp_exp c e1 in
-      let t2, op2, str2 = cmp_exp c (Ast.no_loc (Bop(Add, e2, Ast.no_loc (CInt 1L))))in
+      let t2, op2, str2 = cmp_exp c e2 in
+      let skip_f_id = gensym "skip_f_id" in
       let aux_var = gensym "gep_aux" in
       let index_aux = gensym "index_aux" in
       let index_res = gensym "index_res" in
@@ -385,7 +399,8 @@ let rec cmp_exp (c : Ctxt.t) (exp : Ast.exp node) : Ll.ty * Ll.operand * stream
           ( t_arr,
             Id index_res,
             str1 >@ str2
-            >@ [ I (aux_var, Bitcast (t1, op1, Ptr t_arr)) ]
+            >@ [ I (skip_f_id, Gep (t1, op1, [ Const 1L ])) ]
+            >@ [ I (aux_var, Bitcast (t1, Id skip_f_id, Ptr t_arr)) ]
             >@ [ I (index_aux, Gep (Ptr t_arr, Id aux_var, [ op2 ])) ]
             >@ [ I (index_res, Load (Ptr t_arr, Id index_aux)) ] )
       | _ -> failwith "just dont")
@@ -460,9 +475,10 @@ let rec cmp_stmt (c : Ctxt.t) (rt : Ll.ty) (stmt : Ast.stmt node) :
           (c, str_rhs >@ [ I ("", Store (t2, op_rhs, op1)) ])
       | Index (e1, e2) ->
           let t1, op1, str1 = cmp_exp c e1 in
-          let t2, op2, str2 = cmp_exp c (Ast.no_loc (Bop(Add, e2, Ast.no_loc (CInt 1L))))in
+          let t2, op2, str2 = cmp_exp c e2 in
           let aux_var = gensym "gep_aux" in
           let index_aux = gensym "index_aux" in
+          let skip_f_id = gensym "skip_f_id" in
           let t_arr =
             match t1 with
             | Ptr (Struct [ _; Array (_, t) ]) -> t
@@ -470,9 +486,10 @@ let rec cmp_stmt (c : Ctxt.t) (rt : Ll.ty) (stmt : Ast.stmt node) :
           in
           ( c,
             str_rhs >@ str1 >@ str2
-            >@ [ I (aux_var, Gep (t1, op1, [ op2 ])) ]
-            >@ [ I (index_aux, Bitcast (t1, Id aux_var, Ptr t_arr)) ]
-            >@ [ I ("", Store (t2, op_rhs, Id index_aux)) ] )
+            >@ [ I (skip_f_id, Gep (t1, op1, [ Const 1L ])) ]
+            >@ [ I (index_aux, Bitcast (t1, Id skip_f_id, Ptr t_arr)) ]
+            >@ [ I (aux_var, Gep (Ptr t_arr, Id index_aux, [ op2 ])) ]
+            >@ [ I ("", Store (t_arr, op_rhs, Id aux_var)) ] )
       | _ -> failwith "Ill formed LHS")
   | Decl (id, exp) ->
       let t, op, str = cmp_exp c exp in
@@ -578,9 +595,9 @@ let cmp_global_ctxt (c : Ctxt.t) (p : Ast.prog) : Ctxt.t =
             | CNull t -> (Ptr (cmp_rty t), Gid name)
             | CBool _ -> (Ptr I1, Gid name)
             | CInt _ -> (Ptr I64, Gid name)
-            | CStr s -> (Ptr(Ptr (Array (1 + String.length s, I8))), Gid name)
-            | CArr (t, e) ->
-                (Ptr (Ptr (Struct [ I64; Array (List.length e, cmp_ty t) ])), Gid name)
+            | CStr s -> (Ptr (Ptr I8), Gid name)
+            | CArr (t, _) ->
+                (Ptr (Ptr (Struct [ I64; Array (0, cmp_ty t) ])), Gid name)
             | _ -> failwith "Invalid global initializer")
       | _ -> c)
     c p
@@ -637,13 +654,18 @@ let rec cmp_gexp (c : Ctxt.t) (e : Ast.exp node) :
   | CNull t -> ((Ptr (cmp_rty t), GNull), [])
   | CBool b -> ((I1, GInt (if b then 1L else 0L)), [])
   | CInt i -> ((I64, GInt i), [])
-  | CStr s -> let str_aux = gensym "str_aux" in
-    ((Ptr (Array (1 + String.length s, I8)), GGid str_aux), [str_aux ,(Array (1 + String.length s, I8), GString s)])
+  | CStr s ->
+      let str_aux = gensym "str_aux" in
+      let gty_s = Array (1 + String.length s, I8) in
+      ( (Ptr I8, GBitcast (Ptr gty_s, GGid str_aux, Ptr I8)),
+        [ (str_aux, (Array (1 + String.length s, I8), GString s)) ] )
   | CArr (t, es) ->
       let arr_aux = gensym "arr_aux" in
       let arr_init = List.map (fun (e : exp node) -> fst (cmp_gexp c e)) es in
       let n = List.length arr_init in
-      ( (Ptr (Struct [ I64; Array (n, cmp_ty t) ]), GGid arr_aux),
+      let t_arr = Struct [ I64; Array (0, cmp_ty t) ] in
+      let gty_arr = Struct [ I64; Array (n, cmp_ty t) ] in
+      ( (Ptr t_arr, GBitcast (Ptr gty_arr, GGid arr_aux, Ptr t_arr)),
         [
           ( arr_aux,
             ( Struct [ I64; Array (n, cmp_ty t) ],
