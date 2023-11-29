@@ -276,6 +276,13 @@ let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
 
    NOTE: global initializers may mention function identifiers as
    constants, but can't mention other global values *)
+let convert_bnd c l = List.map (fun(id, exp_n)-> {fieldName = id; ftyp = (typecheck_exp c exp_n)}) l 
+
+
+let rec global_add_aux (c:Tctxt.t)(args : (ty*id) list) : Tctxt.t =
+  match args with 
+  |((ty,id)::tl)-> global_add_aux (add_global c id ty) tl
+  |[]-> c 
 
 
 let create_struct_ctxt (p : Ast.prog) : Tctxt.t =
@@ -283,7 +290,7 @@ let create_struct_ctxt (p : Ast.prog) : Tctxt.t =
       match p with
       |(h::tl)-> begin match h with
                 | Gvdecl g -> begin match g.elt.init.elt with
-                              | CStruct (id,bnd)-> struct_ctxt_aux tl (add_struct ctxt id ([{fieldName= id;ftyp = TInt}])) (*TODO*)
+                              | CStruct (id,bnd)-> struct_ctxt_aux tl (add_struct ctxt id (convert_bnd ctxt bnd)) (*TODO*)
                               |_-> struct_ctxt_aux tl ctxt
 end
                 |_-> struct_ctxt_aux tl ctxt
@@ -291,7 +298,14 @@ end
       |[]-> ctxt
       in struct_ctxt_aux p {locals = []; globals = []; structs = [] }
 let create_function_ctxt (tc : Tctxt.t) (p : Ast.prog) : Tctxt.t =
-  failwith "todo: create_function_ctxt"
+  let rec function_ctxt_aux c p =
+    match p with 
+    |(h::tl)-> begin match h with
+              |Gfdecl f -> function_ctxt_aux (global_add_aux c f.elt.args) tl 
+              |_-> function_ctxt_aux c tl
+  end 
+  |[]-> c 
+in function_ctxt_aux tc p 
 
 let create_global_ctxt (tc : Tctxt.t) (p : Ast.prog) : Tctxt.t =
   failwith "todo: create_function_ctxt"
