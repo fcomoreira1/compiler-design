@@ -115,8 +115,39 @@ and subtype_ret_ty (c : Tctxt.t) (t1 : Ast.ret_ty) (t2 : Ast.ret_ty) : bool =
     - tc contains the structure definition context
 *)
 let rec typecheck_ty (l : 'a Ast.node) (tc : Tctxt.t) (t : Ast.ty) : unit =
-  failwith "todo: implement typecheck_ty"
+  match t with
+  | TInt | TBool -> ()
+  | TRef rt |TNullRef rt -> typecheck_rty l tc rt 
+   
 
+and typecheck_rty (l : 'a Ast.node) (tc: Tctxt.t) (rt : Ast.rty) : unit =
+  match rt with
+  |RString -> ()
+  |RStruct st -> typecheck_struct l tc st  
+  |RArray t -> typecheck_ty l tc t 
+  |RFun (t,rt) -> if typecheck_ret_ty l tc rt then typecheck_fun l tc t else  failwith "type_error implementation missing"
+
+and typecheck_struct (l : 'a Ast.node) (tc: Tctxt.t) (st : Ast.id) : unit =
+  let str = lookup_struct st tc in
+  let rec typecheck_struct_aux l tc str =
+    match str with 
+    | (h::tl)-> begin match h.ftyp with
+                |TInt |TBool -> typecheck_struct_aux l tc tl
+                |TRef rt |TNullRef rt -> if (typecheck_rty l tc rt = ()) then typecheck_struct_aux l tc tl else failwith "type_error implementation missing"
+  end
+  |[]->()
+in typecheck_struct_aux l tc str 
+and typecheck_fun (l : 'a Ast.node) (tc: Tctxt.t) (tl: Ast.ty list) : unit =
+  match tl with
+  |(h::t) -> begin match h with 
+            | TInt | TBool -> typecheck_fun l tc t 
+            | TRef rt | TNullRef rt -> typecheck_rty l tc rt 
+            end 
+  |_-> ()
+and typecheck_ret_ty (l : 'a Ast.node) (tc: Tctxt.t) (ret_ty: Ast.ret_ty) : bool =
+  match ret_ty with
+  | RetVoid -> true
+  | RetVal t -> if typecheck_ty l tc t = () then true else false 
 (* typechecking expressions ------------------------------------------------- *)
 (* Typechecks an expression in the typing context c, returns the type of the
    expression.  This function should implement the inference rules given in the
@@ -142,8 +173,21 @@ let rec typecheck_ty (l : 'a Ast.node) (tc : Tctxt.t) (t : Ast.ty) : unit =
    a=1} is well typed.  (You should sort the fields to compare them.)
 *)
 let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
-  failwith "todo: implement typecheck_exp"
-
+  match e.elt with 
+  | CNull rt -> TNullRef rt
+  | CBool b -> TBool 
+  | CInt i -> TInt 
+  | CStr x -> TRef RString 
+  | Id id -> let id_loc = lookup_local_option id c in 
+              begin match id_loc with
+              | Some x -> failwith "TYP_LOCAL"
+              | None -> let id_g = lookup_global_option id c in
+                         begin match id_g with
+                        | Some x -> failwith "TYP_GLOBAL"
+                        | None -> failwith "type_error implementation"
+  end 
+end 
+  | _ -> failwith "Typ Carr and later not implemented"
 (* statements --------------------------------------------------------------- *)
 
 (* Typecheck a statement
@@ -233,9 +277,19 @@ let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
    NOTE: global initializers may mention function identifiers as
    constants, but can't mention other global values *)
 
-let create_struct_ctxt (p : Ast.prog) : Tctxt.t =
-  failwith "todo: create_struct_ctxt"
 
+let create_struct_ctxt (p : Ast.prog) : Tctxt.t =
+    let rec struct_ctxt_aux p ctxt=
+      match p with
+      |(h::tl)-> begin match h with
+                | Gvdecl g -> begin match g.elt.init.elt with
+                              | CStruct (id,bnd)-> struct_ctxt_aux tl (add_struct ctxt id ([{fieldName= id;ftyp = TInt}])) (*TODO*)
+                              |_-> struct_ctxt_aux tl ctxt
+end
+                |_-> struct_ctxt_aux tl ctxt
+end 
+      |[]-> ctxt
+      in struct_ctxt_aux p {locals = []; globals = []; structs = [] }
 let create_function_ctxt (tc : Tctxt.t) (p : Ast.prog) : Tctxt.t =
   failwith "todo: create_function_ctxt"
 
