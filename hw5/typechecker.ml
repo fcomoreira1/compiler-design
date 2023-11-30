@@ -117,7 +117,8 @@ and subtype_ret_ty (c : Tctxt.t) (t1 : Ast.ret_ty) (t2 : Ast.ret_ty) : bool =
 let rec typecheck_ty (l : 'a Ast.node) (tc : Tctxt.t) (t : Ast.ty) : unit =
   match t with
   | TInt | TBool -> ()
-  | TRef rt |TNullRef rt -> typecheck_rty l tc rt 
+  | TRef rt -> typecheck_rty l tc rt 
+  | TNullRef rt -> typecheck_rty l tc rt 
    
 
 and typecheck_rty (l : 'a Ast.node) (tc: Tctxt.t) (rt : Ast.rty) : unit =
@@ -125,7 +126,7 @@ and typecheck_rty (l : 'a Ast.node) (tc: Tctxt.t) (rt : Ast.rty) : unit =
   |RString -> ()
   |RStruct st -> typecheck_struct l tc st  
   |RArray t -> typecheck_ty l tc t 
-  |RFun (t,rt) -> if typecheck_ret_ty l tc rt then typecheck_fun l tc t else  failwith "type_error implementation missing"
+  |RFun (t,rt) -> if typecheck_ret_ty l tc rt then typecheck_fun l tc t else  type_error l ("wrong function type")
 
 and typecheck_struct (l : 'a Ast.node) (tc: Tctxt.t) (st : Ast.id) : unit =
   let str = lookup_struct st tc in
@@ -133,10 +134,11 @@ and typecheck_struct (l : 'a Ast.node) (tc: Tctxt.t) (st : Ast.id) : unit =
     match str with 
     | (h::tl)-> begin match h.ftyp with
                 |TInt |TBool -> typecheck_struct_aux l tc tl
-                |TRef rt |TNullRef rt -> if (typecheck_rty l tc rt = ()) then typecheck_struct_aux l tc tl else failwith "type_error implementation missing"
+                |TRef rt |TNullRef rt -> if (typecheck_rty l tc rt = ()) then typecheck_struct_aux l tc tl else type_error l ("struct failure")
   end
   |[]->()
 in typecheck_struct_aux l tc str 
+
 and typecheck_fun (l : 'a Ast.node) (tc: Tctxt.t) (tl: Ast.ty list) : unit =
   match tl with
   |(h::t) -> begin match h with 
@@ -144,6 +146,7 @@ and typecheck_fun (l : 'a Ast.node) (tc: Tctxt.t) (tl: Ast.ty list) : unit =
             | TRef rt | TNullRef rt -> typecheck_rty l tc rt 
             end 
   |_-> ()
+
 and typecheck_ret_ty (l : 'a Ast.node) (tc: Tctxt.t) (ret_ty: Ast.ret_ty) : bool =
   match ret_ty with
   | RetVoid -> true
@@ -180,13 +183,32 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
   | CStr x -> TRef RString 
   | Id id -> let id_loc = lookup_local_option id c in 
               begin match id_loc with
-              | Some x -> failwith "TYP_LOCAL"
+              | Some x -> x (*TODO*)
               | None -> let id_g = lookup_global_option id c in
                          begin match id_g with
-                        | Some x -> failwith "TYP_GLOBAL"
-                        | None -> failwith "type_error implementation"
+                        | Some x -> x (*TODO*)
+                        | None -> type_error e ("expression mismatch")
   end 
 end 
+  | CArr (ty,exp_ns)-> let _ = typecheck_ty e c ty in let _ = List.map (fun exp_node -> subtype c (typecheck_exp c exp_node) ty) exp_ns in TRef (RArray ty)
+  | NewArr (ty,exp1,id,epx2) -> let _ = typecheck_ty e c ty in 
+                            if (match exp1.elt with |CInt _-> true |_-> false) 
+                            then let id_loc = lookup_local_option id c in if (match id_loc with |Some x -> false|_->true) then TRef (RArray ty) else type_error e ("Wrong Array")
+                            else type_error e ("Wrong Array initialisation") (*TODO*)
+  | Index (exp1,exp2)-> let ty1 =typecheck_exp c exp1 in let ty2 = typecheck_exp c exp2 in if (ty2 = TInt)then match ty1 with |TRef (RArray t) -> typecheck_exp c ({elt = CArr (t,[exp1;exp2]);loc = e.loc})|_-> type_error e ("wrong index") else type_error e ("Wrong indexing")
+  | Length exp -> let t_arr= typecheck_exp c exp in begin match t_arr with |TRef (RArray t) -> TInt |_-> type_error e ("Can't get Length from nonArray") end
+  | CStruct (id,(ids,exps)::tl) -> type_error e ("Cstruct not implemented")
+  | Call (e1, es)-> type_error e ("CAll not implemented")
+  | Bop (op,exp1,exp2)->let ty1 = typecheck_exp c exp1 in
+                        let ty2 = typecheck_exp c exp2 in
+                        begin match op with 
+                        |Eq |Neq-> if (subtype c ty1 ty2 && subtype c ty2 ty1) then TBool else type_error e ("Equal have to be same types") 
+                        |_-> let (ty_binop1,ty_binop2,ty_binop3)= typ_of_binop op in  
+                        if (ty1=ty_binop1 && ty2=ty_binop2)then ty_binop3 else type_error e ("Wrong binop")
+                          end
+  | Uop (op,exp)-> let (ty_unop1,ty_unop2)=typ_of_unop op in 
+                        let ty = typecheck_exp c exp in
+                        if (ty_unop1=ty) then ty else type_error e ("Wrong uop")
   | _ -> failwith "Typ Carr and later not implemented"
 (* statements --------------------------------------------------------------- *)
 
@@ -247,9 +269,25 @@ let typecheck_tdecl (tc : Tctxt.t) id fs (l : 'a Ast.node) : unit =
     - typechecks the body of the function (passing in the expected return type
     - checks that the function actually returns
 *)
-let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
-  failwith "todo: typecheck_fdecl"
+let typecheck_block (tc : Tctxt.t) (f: Ast.block): unit =
+  let rec block_aux tc stmt =
+    match stmt with 
+    |(h::tl)-> begin match h.elt with
+              |Decl (id,exp_n)-> let _ = typecheck_exp tc exp_n in ()
+              |_-> block_aux tc tl 
+  end
+    |[]-> ()
+in block_aux tc f
 
+let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
+  let updated_tc = List.fold_left (fun tc (typ,id) -> Tctxt.add_local tc id typ) tc f.args in
+  let _ = typecheck_block updated_tc f.body in 
+  let _ = typecheck_ret_ty l updated_tc f.frtyp in
+  ()
+  (*let rec fdecl_aux tc f l 
+  match f.args with 
+  | ((id,ty)::tl)-> fdecl_aux (add_local tc id ty) tl l
+  | []-> tc *)
 (* creating the typchecking context ----------------------------------------- *)
 
 (* The following functions correspond to the
@@ -307,8 +345,23 @@ let create_function_ctxt (tc : Tctxt.t) (p : Ast.prog) : Tctxt.t =
   |[]-> c 
 in function_ctxt_aux tc p 
 
+let rec global_ctxt_add (tc:Tctxt.t) (fl: field list) : Tctxt.t =
+  match fl with
+  |({fieldName = id;ftyp=ty}::tl)-> global_ctxt_add (add_global tc id ty) tl 
+  |[]-> tc 
+
 let create_global_ctxt (tc : Tctxt.t) (p : Ast.prog) : Tctxt.t =
-  failwith "todo: create_function_ctxt"
+  let rec global_aux tc p =
+  match p with 
+  |(h::tl)-> begin match h with
+            |Gtdecl d -> begin match d.elt with
+                        |(id,ts) -> global_aux (global_ctxt_add tc ts) tl
+                        
+  end
+            |_->global_aux tc  tl
+end
+|[]-> tc 
+in global_aux tc p 
 
 (* This function implements the |- prog and the H ; G |- prog
    rules of the oat.pdf specification.
