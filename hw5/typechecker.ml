@@ -63,9 +63,11 @@ and subtype_ref_struct (c : Tctxt.t) (id1 : id) (id2 : id) : bool =
   let st2 = lookup_struct id2 c in
   let rec subfields_struct st1 st2 : bool =
     match (st1, st2) with
-    | [], _ -> true
+    | _, [] -> true
     | h1 :: t1, h2 :: t2 ->
-        if h1.ftyp = h2.ftyp then subfields_struct t1 t2 else false
+        if h1.ftyp = h2.ftyp && h1.fieldName = h2.fieldName then
+          subfields_struct t1 t2
+        else false
     | _ -> false
   in
   subfields_struct st1 st2
@@ -74,7 +76,7 @@ and subtype_ref_func (c : Tctxt.t) (tyl1 : Ast.ty list) (ret1 : Ast.ret_ty)
     (tyl2 : Ast.ty list) (ret2 : Ast.ret_ty) : bool =
   if List.compare_lengths tyl1 tyl2 = 0 then
     if subtype_ret_ty c ret1 ret2 then
-      List.for_all2 (fun t1 t2 -> subtype c t1 t2) tyl1 tyl2
+      List.for_all2 (fun t1 t2 -> subtype c t2 t1) tyl1 tyl2
     else false
   else false
 
@@ -178,7 +180,7 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
           let id_g = lookup_global_option id c in
           match id_g with
           | Some x -> x (*TODO*)
-          | None -> type_error e "Id not found"))
+          | None -> type_error e ("Exp: Id " ^ id ^ " not found")))
   | CArr (ty, exp_ns) ->
       typecheck_ty e c ty;
       List.iteri
@@ -186,17 +188,17 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
           if subtype c (typecheck_exp c exp_node) ty then ()
           else
             type_error e
-              ("Expression" ^ Int.to_string i ^ "does not match array type"))
+              ("Exp: Expression" ^ Int.to_string i ^ "does not match array type"))
         exp_ns;
       TRef (RArray ty)
   | NewArr (ty, exp1, id, exp2) ->
       typecheck_ty e c ty;
       let ty_exp1 = typecheck_exp c exp1 in
-      if ty_exp1 <> TInt then type_error e "Size exp NewArr has to be int"
+      if ty_exp1 <> TInt then type_error e "Exp: Size exp NewArr has to be int"
       else
         let c_arr = add_local c id ty in
         if subtype c_arr (typecheck_exp c_arr exp2) ty then TRef (RArray ty)
-        else type_error e "Bad NewArr exp2 type"
+        else type_error e "Exp: Bad NewArr exp2 type"
       (* let ty_exp2 = typecheck_exp c exp2 in
          if match exp1.elt with CInt _ -> true | _ -> false then
            let id_loc = lookup_local_option id c in
@@ -206,20 +208,20 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
   | Index (exp1, exp2) -> (
       let ty1 = typecheck_exp c exp1 in
       let ty2 = typecheck_exp c exp2 in
-      if ty2 <> TInt then type_error e "Index has to be int"
+      if ty2 <> TInt then type_error e "Exp: Index has to be int"
       else
         match ty1 with
         | TRef (RArray t) -> t
-        | _ -> type_error e "Can only index arrays")
+        | _ -> type_error e "Exp: Can only index arrays")
   | Length exp -> (
       let t_arr = typecheck_exp c exp in
       match t_arr with
       | TRef (RArray _) -> TInt
-      | _ -> type_error e "Can't get Length from nonArray")
+      | _ -> type_error e "Exp: Can't get Length from nonArray")
   | CStruct (id, l) ->
       let str = lookup_struct_option id c in
       (match str with
-      | None -> type_error e "Struct not found"
+      | None -> type_error e "Exp: Struct not found"
       | Some str ->
           List.iteri
             (fun i f ->
@@ -227,12 +229,14 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
                 try Some (List.assoc f.fieldName l) with Not_found -> None
               in
               match exp1 with
-              | None -> type_error e ("Field" ^ Int.to_string i ^ "not found")
+              | None ->
+                  type_error e ("Exp: Field" ^ Int.to_string i ^ "not found")
               | Some exp1 ->
                   let t = typecheck_exp c exp1 in
                   if subtype c t f.ftyp then ()
                   else
-                    type_error e ("Field" ^ Int.to_string i ^ "has wrong type"))
+                    type_error e
+                      ("Exp: Field" ^ Int.to_string i ^ "has wrong type"))
             str);
       TRef (RStruct id)
   | Proj (exp, id_field) -> (
@@ -241,16 +245,16 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
       | TRef (RStruct id) -> (
           let str = lookup_struct_option id c in
           match str with
-          | None -> type_error e "Struct for project not found in context"
+          | None -> type_error e "Exp: Struct for project not found in context"
           | Some str -> (
               let seq_str = List.map (fun x -> (x.fieldName, x.ftyp)) str in
               let t =
                 try Some (List.assoc id_field seq_str) with Not_found -> None
               in
               match t with
-              | None -> type_error e "Field not found"
+              | None -> type_error e "Exp: Field not found"
               | Some t -> t))
-      | _ -> type_error e "Can only project structs")
+      | _ -> type_error e "Exp: Can only project structs")
   | Call (e1, es) -> (
       let ty1 = typecheck_exp c e1 in
       match ty1 with
@@ -261,27 +265,27 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
               if subtype c t (List.nth tyl i) then ()
               else
                 type_error e
-                  ("Wrong type in call for argument" ^ Int.to_string i))
+                  ("Exp: Wrong type in call for argument" ^ Int.to_string i))
             es;
           match ret with
-          | RetVoid -> type_error e "Has to return a value"
+          | RetVoid -> type_error e "Exp: Has to return a value"
           | RetVal t -> t)
-      | _ -> type_error e "Can only call functions")
+      | _ -> type_error e "Exp: Can only call functions")
   | Bop (op, exp1, exp2) -> (
       let ty1 = typecheck_exp c exp1 in
       let ty2 = typecheck_exp c exp2 in
       match op with
       | Eq | Neq ->
           if subtype c ty1 ty2 && subtype c ty2 ty1 then TBool
-          else type_error e "Equal have to be same types"
+          else type_error e "Exp: Equal have to be same types"
       | _ ->
           let ty_binop1, ty_binop2, ty_binop3 = typ_of_binop op in
           if ty1 = ty_binop1 && ty2 = ty_binop2 then ty_binop3
-          else type_error e "Wrong binop")
+          else type_error e "Exp: Wrong binop")
   | Uop (op, exp) ->
       let ty_unop1, ty_unop2 = typ_of_unop op in
       let ty = typecheck_exp c exp in
-      if ty_unop1 = ty then ty else type_error e "Wrong uop"
+      if ty_unop1 = ty then ty else type_error e "Exp: Wrong uop"
 (* statements --------------------------------------------------------------- *)
 
 (* Typecheck a statement
@@ -315,9 +319,111 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
    - You will probably find it convenient to add a helper function that implements the
      block typecheck rules.
 *)
-let rec typecheck_stmt (tc : Tctxt.t) (s : Ast.stmt node) (to_ret : ret_ty) :
+
+let typecheck_vdecl (tc : Tctxt.t) (vd : Ast.vdecl) : Tctxt.t =
+  let id, e = vd in
+  let t = typecheck_exp tc e in
+  let loc = lookup_local_option id tc in
+  match loc with
+  | Some _ -> type_error e "Id already declared"
+  | None -> add_local tc id t
+
+let rec typecheck_block (tc : Tctxt.t) (blk : Ast.block) (to_ret : ret_ty) :
+    bool =
+  let rec block_aux tc stmts : bool =
+    match stmts with
+    | stm :: [] ->
+        let _, b = typecheck_stmt tc stm to_ret in
+        b
+    | stm :: tl ->
+        let ctxt, b = typecheck_stmt tc stm to_ret in
+        if b then type_error stm "Block: Can't return before end of block"
+        else block_aux ctxt tl
+    | [] -> false
+  in
+  block_aux tc blk
+
+and typecheck_stmt (tc : Tctxt.t) (s : Ast.stmt node) (to_ret : ret_ty) :
     Tctxt.t * bool =
-  failwith "todo: implement typecheck_stmt"
+  match s.elt with
+  | Assn (exp1, exp2) -> (
+      match exp1.elt with
+      | Id id ->
+          let loc = lookup_local_option id tc in
+          let glob = lookup_global_option id tc in
+          (match loc with
+          | Some _ -> ()
+          | None -> (
+              match glob with
+              | Some t -> (
+                  match t with
+                  | TRef (RFun _) ->
+                      type_error s "Stmt: Can't assign to functions"
+                  | _ -> ())
+              | None -> type_error s "Stmt: Id not found"));
+          let t1 = typecheck_exp tc exp1 in
+          let t2 = typecheck_exp tc exp2 in
+          if subtype tc t2 t1 then (tc, false)
+          else type_error s "Stmt: Can't assign different types"
+      | _ -> type_error s "Stmt: Can only assign to ids")
+  | Decl (id, e) -> (typecheck_vdecl tc (id, e), false)
+  | SCall (e1, es) -> (
+      let t = typecheck_exp tc e1 in
+      match t with
+      | TRef (RFun (tyl, ret)) -> (
+          List.iteri
+            (fun i e ->
+              let t = typecheck_exp tc e in
+              if subtype tc t (List.nth tyl i) then ()
+              else
+                type_error s
+                  ("Stmt: Wrong type in call for argument" ^ Int.to_string i))
+            es;
+          match ret with
+          | RetVoid -> (tc, false)
+          | RetVal _ -> type_error s "Stmt: Call must invoke void function")
+      | _ -> type_error s "Stmt: Can only call functions")
+  | If (exp, blk1, blk2) ->
+      let t = typecheck_exp tc exp in
+      if t = TBool then
+        let b1 = typecheck_block tc blk1 to_ret in
+        let b2 = typecheck_block tc blk2 to_ret in
+        (tc, b1 && b2)
+      else type_error s "Stmt: If condition must be bool"
+  | While (exp, blk) ->
+      let t = typecheck_exp tc exp in
+      if t = TBool then
+        let _ = typecheck_block tc blk to_ret in
+        (tc, false)
+      else type_error s "Stmt: While condition must be bool"
+  | For (vdecls, exp, stmt, blk) ->
+      let for_ctxt = List.fold_left typecheck_vdecl tc vdecls in
+      let _ =
+        match exp with
+        | Some t ->
+            if typecheck_exp for_ctxt t <> TBool then
+              type_error s "Stmt: For condition must be bool"
+            else ()
+        | None -> ()
+      and _ =
+        match stmt with
+        | Some t ->
+            let _, b = typecheck_stmt for_ctxt t to_ret in
+            if b then type_error s "Stmt: For stmt must not return" else ()
+        | None -> ()
+      and _ = typecheck_block for_ctxt blk to_ret in
+      (tc, false)
+  | Ret exp -> (
+      match exp with
+      | Some t ->
+          let ty = typecheck_exp tc t in
+          if subtype_ret_ty tc (RetVal ty) to_ret then (tc, true)
+          else type_error s "Stmt: Return type doesn't match"
+      | None ->
+          if to_ret = RetVoid then (tc, true)
+          else type_error s "Stmt: Returning void for non-void function")
+  | _ -> failwith "unimplemented"
+(*TODO Check Cast case*)
 
 (* struct type declarations ------------------------------------------------- *)
 (* Here is an example of how to implement the TYP_TDECLOK rule, which is
@@ -341,22 +447,13 @@ let typecheck_tdecl (tc : Tctxt.t) id fs (l : 'a Ast.node) : unit =
     - typechecks the body of the function (passing in the expected return type
     - checks that the function actually returns
 *)
-let typecheck_block (tc : Tctxt.t) (blk : Ast.block) (to_ret: ret_ty) : unit =
-  let rec block_aux tc stmts : bool =
-    match stmts with
-    | stm :: tl -> (
-        let ctxt, b = typecheck_stmt tc stm to_ret in
-        block_aux ctxt tl || b)
-    | [] -> false
-  in
-  if block_aux tc blk then () 
-  else type_error (List.hd blk) "No return in function block"
 
 let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
   let updated_tc =
     List.fold_left (fun tc (typ, id) -> Tctxt.add_local tc id typ) tc f.args
   in
-  typecheck_block updated_tc f.body f.frtyp;
+  if typecheck_block updated_tc f.body f.frtyp then ()
+  else type_error l "No return in function block";
   typecheck_ret_ty l updated_tc f.frtyp
 
 (*let rec fdecl_aux tc f l
@@ -421,7 +518,7 @@ let create_function_ctxt (tc : Tctxt.t) (p : Ast.prog) : Tctxt.t =
             match lookup_global_option f.elt.fname c with
             | Some _ -> type_error f "Function already defined"
             | None ->
-                let new_ctxt = add_global tc f.elt.fname fty in
+                let new_ctxt = add_global c f.elt.fname fty in
                 function_ctxt_aux new_ctxt tl)
         | _ -> function_ctxt_aux c tl)
     | [] -> c
@@ -453,6 +550,12 @@ let typecheck_program (p : Ast.prog) : unit =
   let sc = create_struct_ctxt p in
   let fc = create_function_ctxt sc p in
   let tc = create_global_ctxt fc p in
+  (* print_endline "Globals:";
+     List.iter (fun (id, _) -> print_endline id) tc.globals;
+     print_endline "Locals:";
+     List.iter (fun (id, _) -> print_endline id) tc.locals;
+     print_endline "Structs:";
+     List.iter (fun (id, _) -> print_endline id) tc.structs; *)
   List.iter
     (fun p ->
       match p with
