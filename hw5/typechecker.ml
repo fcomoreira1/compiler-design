@@ -365,6 +365,7 @@ and typecheck_stmt (tc : Tctxt.t) (s : Ast.stmt node) (to_ret : ret_ty) :
           let t2 = typecheck_exp tc exp2 in
           if subtype tc t2 t1 then (tc, false)
           else type_error s "Stmt: Can't assign different types"
+      
       | _ -> type_error s "Stmt: Can only assign to ids")
   | Decl (id, e) -> (typecheck_vdecl tc (id, e), false)
   | SCall (e1, es) -> (
@@ -486,7 +487,14 @@ let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
 
    NOTE: global initializers may mention function identifiers as
    constants, but can't mention other global values *)
-
+let add_builtins (tc: Tctxt.t) : Tctxt.t =
+  let tc = add_global tc "string_of_array" (TRef (RFun ([TRef (RArray (TInt))], RetVal (TRef (RString))))) in
+  let tc = add_global tc "array_of_string" (TRef (RFun ([TRef (RString)], RetVal (TRef (RArray (TInt)))))) in 
+  let tc = add_global tc "print_string" (TRef (RFun ([TRef (RString)], RetVoid))) in
+  let tc = add_global tc "print_int" (TRef (RFun ([TInt],RetVoid))) in
+  let tc = add_global tc "print_bool" (TRef (RFun ([TBool], RetVoid))) in
+  tc
+  
 let create_struct_ctxt (p : Ast.prog) : Tctxt.t =
   let rec struct_ctxt_aux p ctxt =
     match p with
@@ -523,7 +531,7 @@ let create_function_ctxt (tc : Tctxt.t) (p : Ast.prog) : Tctxt.t =
         | _ -> function_ctxt_aux c tl)
     | [] -> c
   in
-  function_ctxt_aux tc p
+  function_ctxt_aux (add_builtins tc) p
 
 let create_global_ctxt (tc : Tctxt.t) (p : Ast.prog) : Tctxt.t =
   let rec global_aux ctxt p =
