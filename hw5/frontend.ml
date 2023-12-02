@@ -197,8 +197,19 @@ let oat_alloc_array ct (t : Ast.ty) (size : Ll.operand) :
 
    - make sure to calculate the correct amount of space to allocate!
 *)
-let oat_alloc_struct ct (id : Ast.id) : Ll.ty * operand * stream =
-  failwith "TODO: oat_alloc_struct"
+let oat_alloc_struct (ct:TypeCtxt.t ) (id : Ast.id) : Ll.ty * operand * stream =
+  let str_ty = TypeCtxt.lookup id ct in
+  let size = Int64.of_int @@ (List.length str_ty) * 8 in
+  let str_id = gensym "raw_struct" in
+  let mal_ty = Ptr I64 in
+  let ans_id = gensym @@ "struct"^id in
+  let ans_ty = cmp_ty ct @@ TRef (RStruct id) in
+  (ans_ty, Id ans_id, 
+    lift
+      [
+        (str_id, Call (mal_ty, Gid "oat_malloc", [ (I64, Const size) ]));
+        (ans_id, Bitcast (mal_ty, Id ans_id, ans_ty));
+      ] )
 
 let str_arr_ty s = Array (1 + String.length s, I8)
 let i1_op_of_bool b = Ll.Const (if b then 1L else 0L)
@@ -326,12 +337,14 @@ let rec cmp_exp (tc : TypeCtxt.t) (c : Ctxt.t) (exp : Ast.exp node) :
       let arr_ty, arr_op, alloc_code = oat_alloc_array tc elt_ty size_op in
       let id_node = no_loc (Ast.Id id) in
       let arr_node = no_loc (Ast.Id "arr") in
-      let arr_id = gensym "arr"  in
+      (*Allocates array to an usable variable*)
+      let arr_id = gensym "arr" in
       let up_c = Ctxt.add c "arr" (Ptr arr_ty, Id arr_id) in
-      let array_acc_code = 
-      [E (arr_id, Alloca arr_ty)]
-        >@ [I ("", Store (arr_ty, arr_op, Id arr_id))] in
-
+      let array_acc_code =
+        [ E (arr_id, Alloca arr_ty) ]
+        >@ [ I ("", Store (arr_ty, arr_op, Id arr_id)) ]
+      in
+      (*Generates the for loop code*)
       let init = [ (id, no_loc @@ CInt 0L) ]
       and guard = no_loc (Bop (Lt, id_node, no_loc @@ Length arr_node))
       and after =
@@ -346,7 +359,18 @@ let rec cmp_exp (tc : TypeCtxt.t) (c : Ctxt.t) (exp : Ast.exp node) :
       - compile the initializer expression
       - store the resulting value into the structure
   *)
-  | Ast.CStruct (id, l) -> failwith "TODO: Ast.CStruct"
+  | Ast.CStruct (id, l) ->
+      let str_ty = TypeCtxt.lookup id tc in
+      let tstr, opstr, cstr = oat_alloc_struct tc id in
+      let code = List.concat (List.mapi (
+      fun i field -> 
+        let e = List.assoc field.fieldName l in
+        let t, op, c_e = cmp_exp tc c e in
+        let field_ptr = gensym "field_ptr" in
+        c_e >:: I(field_ptr, Gep(t, opstr, [Const (Int64.of_int i)] ))
+        >:: I("", Store(t, op, Id field_ptr))
+      ) str_ty) in
+      (tstr, opstr, cstr >@ code)
   | Ast.Proj (e, id) ->
       let ans_ty, ptr_op, code = cmp_exp_lhs tc c exp in
       let ans_id = gensym "proj" in
