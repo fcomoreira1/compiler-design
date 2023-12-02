@@ -396,6 +396,7 @@ and cmp_exp_lhs (tc : TypeCtxt.t) (c : Ctxt.t) (e : exp node) :
      in runtime.c.   (That check is where the infamous "ArrayIndexOutOfBounds" exception would
      be thrown...)
   *)
+  
   | Ast.Index (e, i) ->
       let arr_ty, arr_op, arr_code = cmp_exp tc c e in
       let _, ind_op, ind_code = cmp_exp tc c i in
@@ -488,7 +489,20 @@ and cmp_stmt (tc : TypeCtxt.t) (c : Ctxt.t) (rt : Ll.ty) (stmt : Ast.stmt node)
          merge label after either block
   *)
   | Ast.Cast (typ, id, exp, notnull, null) ->
-      failwith "todo: implement Ast.Cast case"
+      let exp_ty,exp_op,exp_code = cmp_exp tc c exp in
+      let null_lbl= gensym "null_lbl" in
+      let notnull_lbl = gensym "notnull_lbl" in
+      let merge_lbl = gensym "merge_lbl" in
+      let new_ctxt = Ctxt.add c id (exp_ty,exp_op) in 
+      let notnull_code = cmp_block tc new_ctxt rt notnull in
+      let null_code = cmp_block tc new_ctxt rt null in 
+      (new_ctxt,
+      exp_code
+      >:: T (Cbr (exp_op,null_lbl,notnull_lbl))
+      >::L notnull_lbl 
+      >:: E (id, Alloca exp_ty) >@notnull_code >::T(Br merge_lbl)
+      >::L null_lbl >@null_code>::T (Br merge_lbl))
+
   | Ast.While (guard, body) ->
       let guard_ty, guard_op, guard_code = cmp_exp tc c guard in
       let lcond, lbody, lpost = (gensym "cond", gensym "body", gensym "post") in
