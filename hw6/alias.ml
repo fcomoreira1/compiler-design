@@ -47,11 +47,18 @@ let insn_flow ((u,i):uid * insn) (d:fact) : fact =
   |Call (t,op,(ops)) -> List.fold_left (fun d (t,op) -> may_alias op d) d ((t,op)::ops)
   |Bitcast (_,op,_)-> let new_d = UidM.update_or SymPtr.MayAlias (fun _ ->SymPtr.MayAlias) u d in 
     begin match op with 
-        | Gid id -> UidM.update_or SymPtr.MayAlias (fun _-> SymPtr.MayAlias) id new_d  
+        | Gid id |Id id -> UidM.update_or SymPtr.MayAlias (fun _-> SymPtr.MayAlias) id new_d  
         | _ -> new_d 
   end
   | Store (_,_,op)->  may_alias op d 
-  | Gep (t,op,(ops)) ->List.fold_left (fun d (op) -> may_alias op d) (UidM.update_or SymPtr.MayAlias (fun _-> SymPtr.MayAlias) u d) (op::ops)
+  | Gep (t,op,(ops)) -> let new_d = UidM.update_or SymPtr.MayAlias (fun _-> SymPtr.MayAlias) u d  in 
+                        begin match t with
+                        |Ptr _ -> begin match op with
+                                        |Id id -> UidM.update_or SymPtr.MayAlias (fun _-> SymPtr.MayAlias) id new_d
+                                        |_-> new_d
+end 
+                        |_-> new_d
+end
   | _-> d 
 end 
 (* The flow function across terminators is trivial: they never change alias info *)
