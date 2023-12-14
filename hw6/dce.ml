@@ -21,10 +21,26 @@ open Datastructures
 
    Hint: Consider using List.filter
  *)
+ 
 let dce_block (lb:uid -> Liveness.Fact.t) 
               (ab:uid -> Alias.fact)
               (b:Ll.block) : Ll.block =
-  failwith "Dce.dce_block unimplemented"
+              let fun_differ (uid, insn)=
+              match insn with
+              |Call _-> true 
+              |Store (_,_,op) -> begin match op with
+                              |Gid id -> true
+                              |Id id -> ((Alias.SymPtr.compare (UidM.find id (ab uid))  Alias.SymPtr.MayAlias)==0 ||(UidS.mem id (lb uid))) 
+                              |_-> false
+end
+              |_-> (UidS.mem uid (lb uid))
+              in {insns = List.filter (fun_differ) b.insns ; term= b.term}
+  (* List.filter (begin match (uid,insn) with 
+              |Call _-> true
+              |Store _-> match (ab uid) with |SymPtr.MayAlias -> true |_->false
+              | _-> false end) b.insns *)
+              
+  
 
 let run (lg:Liveness.Graph.t) (ag:Alias.Graph.t) (cfg:Cfg.t) : Cfg.t =
 
