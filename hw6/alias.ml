@@ -33,21 +33,26 @@ type fact = SymPtr.t UidM.t
    - Other instructions do not define pointers
 
  *)
+let may_alias (op:Ll.operand)(d:fact):fact=
+begin match op with 
+                    | Gid id -> UidM.update_or SymPtr.MayAlias (fun _-> SymPtr.MayAlias) id d  
+                    | _ -> d 
+end 
+
+
 let insn_flow ((u,i):uid * insn) (d:fact) : fact =
   begin match i with
   |Alloca t -> UidM.update_or SymPtr.Unique (fun _-> SymPtr.Unique) u d 
-  |Load (_,op) -> begin match op with 
-              | Gid id -> UidM.update_or SymPtr.MayAlias (fun _-> SymPtr.MayAlias) id d  
-              | _ -> d 
-end
-|Call (t,op,(ops)) -> List.fold_left (fun d (t,op) -> begin match op with |Gid id -> UidM.update_or SymPtr.MayAlias (fun _-> SymPtr.MayAlias) id d|_->d end) d ((t,op)::ops)
-|Bitcast (_,op,_)-> d 
-| Store (_,_,op)->  begin match op with 
-| Gid id -> UidM.update_or SymPtr.MayAlias (fun _-> SymPtr.MayAlias) id d  
-| _ -> d 
-end
-| Gep (t,op,(ops)) ->List.fold_left (fun d op -> begin match op with |Gid id -> UidM.update_or SymPtr.MayAlias (fun _-> SymPtr.MayAlias) id d|_->d end) d (op::ops)
-| _-> UidM.add u SymPtr.UndefAlias d 
+  |Load (_,op) -> may_alias op d 
+  |Call (t,op,(ops)) -> List.fold_left (fun d (t,op) -> may_alias op d) d ((t,op)::ops)
+  |Bitcast (_,op,_)-> let new_d = UidM.update_or SymPtr.MayAlias (fun _ ->SymPtr.MayAlias) u d in 
+    begin match op with 
+        | Gid id -> UidM.update_or SymPtr.MayAlias (fun _-> SymPtr.MayAlias) id new_d  
+        | _ -> new_d 
+  end
+  | Store (_,_,op)->  may_alias op d 
+  | Gep (t,op,(ops)) ->List.fold_left (fun d (op) -> may_alias op d) (UidM.update_or SymPtr.MayAlias (fun _-> SymPtr.MayAlias) u d) (op::ops)
+  | _-> d 
 end 
 (* The flow function across terminators is trivial: they never change alias info *)
 let terminator_flow t (d:fact) : fact = d
