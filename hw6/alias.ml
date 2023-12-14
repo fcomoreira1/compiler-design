@@ -34,9 +34,21 @@ type fact = SymPtr.t UidM.t
 
  *)
 let insn_flow ((u,i):uid * insn) (d:fact) : fact =
-  failwith "Alias.insn_flow unimplemented"
-
-
+  begin match i with
+  |Alloca t -> UidM.update_or SymPtr.Unique (fun _-> SymPtr.Unique) u d 
+  |Load (_,op) -> begin match op with 
+              | Gid id -> UidM.update_or SymPtr.MayAlias (fun _-> SymPtr.MayAlias) id d  
+              | _ -> d 
+end
+|Call (t,op,(ops)) -> List.fold_left (fun d (t,op) -> begin match op with |Gid id -> UidM.update_or SymPtr.MayAlias (fun _-> SymPtr.MayAlias) id d|_->d end) d ((t,op)::ops)
+|Bitcast (_,op,_)-> d 
+| Store (_,_,op)->  begin match op with 
+| Gid id -> UidM.update_or SymPtr.MayAlias (fun _-> SymPtr.MayAlias) id d  
+| _ -> d 
+end
+| Gep (t,op,(ops)) ->List.fold_left (fun d op -> begin match op with |Gid id -> UidM.update_or SymPtr.MayAlias (fun _-> SymPtr.MayAlias) id d|_->d end) d (op::ops)
+| _-> UidM.add u SymPtr.UndefAlias d 
+end 
 (* The flow function across terminators is trivial: they never change alias info *)
 let terminator_flow t (d:fact) : fact = d
 
@@ -68,8 +80,30 @@ module Fact =
        It may be useful to define a helper function that knows how to take the
        join of two SymPtr.t facts.
     *)
+    let join (s1:SymPtr.t) (s2:SymPtr.t) : SymPtr.t =
+      match s1 with
+      |MayAlias -> s1
+      |Unique -> begin match s2 with
+                |MayAlias -> s2
+                |Unique -> s2
+                |UndefAlias-> MayAlias
+    end
+      |UndefAlias -> begin match s2 with
+                |UndefAlias -> s1
+                |_-> MayAlias
+  end
     let combine (ds:fact list) : fact =
-      failwith "Alias.Fact.combine not implemented"
+      let rec merge_list ds =
+        match ds with 
+        |[]-> UidM.empty
+        |[d]->d
+        |(d1::d2::tl)-> merge_list ((UidM.merge (fun str a b ->
+          match (a, b) with
+          | None, None -> None
+          | Some x, None -> Some x
+          | None, Some y -> Some y
+          | Some x, Some y -> Some (join x y))d1 d2)::tl)
+      in merge_list ds 
   end
 
 (* instantiate the general framework ---------------------------------------- *)

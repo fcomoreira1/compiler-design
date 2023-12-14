@@ -84,10 +84,27 @@ module type FACT =
 
    TASK: complete the [solve] function, which implements the above algorithm.
 *)
-module Make (Fact : FACT) (Graph : DFA_GRAPH with type fact := Fact.t) =
-  struct
+module Make(Fact: FACT)(Graph: DFA_GRAPH with type fact := Fact.t) = struct
 
-    let solve (g:Graph.t) : Graph.t =
-      failwith "TODO HW6: Solver.solve unimplemented"
-  end
+  let solve (g: Graph.t) : Graph.t =
+    let worklist = ref (Graph.nodes g) in
+    let new_graph = ref g in
+    while not (Graph.NodeS.is_empty !worklist) do 
+      let n = Graph.NodeS.choose !worklist in
+      worklist := Graph.NodeS.remove n !worklist;
 
+      let old_out = Graph.out !new_graph n in
+      let preds = Graph.preds !new_graph n in
+      let pred_list = List.map (Graph.out !new_graph) (Graph.NodeS.elements preds) in 
+      let ins = Fact.combine pred_list in 
+      let new_out = Graph.flow !new_graph n ins in
+      if Fact.compare old_out new_out <> 0 then begin 
+        let succs = Graph.succs !new_graph n in
+        new_graph := Graph.add_fact n new_out !new_graph;
+        worklist := Graph.NodeS.union !worklist succs;
+      end
+    done;
+    !new_graph
+end
+
+ 
