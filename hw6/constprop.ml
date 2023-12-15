@@ -42,7 +42,9 @@ type fact = SymConst.t UidM.t
   | Sub -> UidM.update_or (SymConst.Const (Int64.sub c1 c2)) (fun _ -> SymConst.Const (Int64.sub c1 c2)) u d
   | Mul -> UidM.update_or (SymConst.Const (Int64.mul c1 c2)) (fun _ -> SymConst.Const (Int64.mul c1 c2)) u d
   | Shl -> UidM.update_or (SymConst.Const (Int64.shift_left c1 (Int64.to_int c2))) (fun _ -> SymConst.Const(Int64.shift_left c1 (Int64.to_int c2))) u d
-  | Lshr | Ashr | And | Or | Xor -> UidM.update_or (SymConst.NonConst) (fun _ -> SymConst.NonConst) u d
+  | Lshr -> UidM.update_or (SymConst.Const (Int64.shift_right_logical c1 (Int64.to_int c2))) (fun _ -> SymConst.Const(Int64.shift_right_logical c1 (Int64.to_int c2))) u d
+  | Ashr -> UidM.update_or (SymConst.Const (Int64.shift_right c1 (Int64.to_int c2))) (fun _ -> SymConst.Const(Int64.shift_right c1 (Int64.to_int c2))) u d
+  | And | Or | Xor -> UidM.update_or (SymConst.NonConst) (fun _ -> SymConst.NonConst) u d
 
 let insn_flow (u,i:uid * insn) (d:fact) : fact =
   begin match i with
@@ -58,9 +60,9 @@ let insn_flow (u,i:uid * insn) (d:fact) : fact =
                   |NonConst -> UidM.update_or (SymConst.NonConst) (fun _-> SymConst.NonConst) u d
                   |UndefConst -> UidM.update_or (SymConst.UndefConst) (fun _-> SymConst.UndefConst) u d  
         end
-        |Gid i1, Gid i2 |Id i1, Id i2->begin  match (UidM.find i1 d, UidM.find i2 d) with 
+        |Gid i1, Gid i2 |Gid i1, Id i2 | Id i1, Gid i2 |Id i1, Id i2->begin  match (UidM.find i1 d, UidM.find i2 d) with 
                   |Const c1, Const c2 -> binop_const c1 c2 bop u d
-                  |_->d
+                  |_->UidM.update_or (SymConst.NonConst) (fun _-> SymConst.NonConst) u d
   end 
   |_-> d
 end
@@ -80,6 +82,7 @@ end
 end
     | Gid id, Gid id2->  d
    |_-> d )
+| Store (_,o1,o2)-> UidM.update_or (SymConst.UndefConst) (fun _-> SymConst.UndefConst) u d
 | _ -> UidM.update_or (SymConst.NonConst) (fun _-> SymConst.NonConst) u d
 end 
 
