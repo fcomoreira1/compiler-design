@@ -74,6 +74,7 @@ end
           |Const c1 ->  begin match cnd with
                 | _-> UidM.update_or (SymConst.Const (Int64.of_int (Int64.compare c1 c2))) (fun _ -> SymConst.Const (Int64.of_int(Int64.compare c1 c2))) u d
 end
+          |_-> UidM.update_or (SymConst.UndefConst) (fun _-> SymConst.UndefConst) u d
 end
     |Const c1, Gid id |Const c1, Id id  -> begin match (UidM.find_or (SymConst.UndefConst) d id) with
           |Const c2 ->  begin match cnd with
