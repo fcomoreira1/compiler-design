@@ -36,8 +36,52 @@ type fact = SymConst.t UidM.t
    - Uid of stores and void calls are UndefConst-out
    - Uid of all other instructions are NonConst-out
  *)
+ let binop_const (c1 : int64) (c2 : int64) (bop : Ll.bop) (u : uid) (d : fact) : fact =
+  match bop with
+  | Add -> UidM.update_or (SymConst.Const (Int64.add c1 c2)) (fun _ -> SymConst.Const (Int64.add c1 c2)) u d
+  | Sub -> UidM.update_or (SymConst.Const (Int64.sub c1 c2)) (fun _ -> SymConst.Const (Int64.sub c1 c2)) u d
+  | Mul -> UidM.update_or (SymConst.Const (Int64.mul c1 c2)) (fun _ -> SymConst.Const (Int64.mul c1 c2)) u d
+  | Shl -> UidM.update_or (SymConst.Const (Int64.shift_left c1 (Int64.to_int c2))) (fun _ -> SymConst.Const(Int64.shift_left c1 (Int64.to_int c2))) u d
+  | Lshr | Ashr | And | Or | Xor -> UidM.update_or (SymConst.NonConst) (fun _ -> SymConst.NonConst) u d
+
 let insn_flow (u,i:uid * insn) (d:fact) : fact =
-  failwith "Constprop.insn_flow unimplemented"
+  begin match i with
+  |Binop (bop,t,op1,op2) -> begin match op1, op2 with 
+        |Const c1, Const c2 -> binop_const c1 c2 bop u d 
+        |Const c1, Gid id |Const c1, Id id ->  begin match (UidM.find_or (SymConst.UndefConst) d id)  with
+                  |Const c2 ->binop_const c1 c2 bop u d
+                  |NonConst -> UidM.update_or (SymConst.NonConst) (fun _-> SymConst.NonConst) u d
+                  |UndefConst -> UidM.update_or (SymConst.UndefConst) (fun _-> SymConst.UndefConst) u d  
+         end
+        |Gid id, Const c2 |Id id, Const c2 -> begin match (UidM.find_or (SymConst.UndefConst) d id) with
+                  |Const c1 -> binop_const c1 c2 bop u d
+                  |NonConst -> UidM.update_or (SymConst.NonConst) (fun _-> SymConst.NonConst) u d
+                  |UndefConst -> UidM.update_or (SymConst.UndefConst) (fun _-> SymConst.UndefConst) u d  
+        end
+        |Gid i1, Gid i2 |Id i1, Id i2->begin  match (UidM.find i1 d, UidM.find i2 d) with 
+                  |Const c1, Const c2 -> binop_const c1 c2 bop u d
+                  |_->d
+  end 
+  |_-> d
+end
+| Icmp (cnd,_, o1, o2) -> (match o1, o2 with 
+    |Const c1, Const c2 ->  begin match cnd with
+                        | _-> UidM.update_or (SymConst.Const (Int64.of_int (Int64.compare c1 c2))) (fun _ -> SymConst.Const (Int64.of_int(Int64.compare c1 c2))) u d
+end
+    |Gid id, Const c2 |Id id, Const c2 -> begin match (UidM.find_or (SymConst.UndefConst) d id) with
+          |Const c1 ->  begin match cnd with
+                | _-> UidM.update_or (SymConst.Const (Int64.of_int (Int64.compare c1 c2))) (fun _ -> SymConst.Const (Int64.of_int(Int64.compare c1 c2))) u d
+end
+end
+    |Const c1, Gid id |Const c1, Id id  -> begin match (UidM.find_or (SymConst.UndefConst) d id) with
+          |Const c2 ->  begin match cnd with
+                | _-> UidM.update_or (SymConst.Const (Int64.of_int (Int64.compare c1 c2))) (fun _ -> SymConst.Const (Int64.of_int(Int64.compare c1 c2))) u d
+end
+end
+    | Gid id, Gid id2->  d
+   |_-> d )
+| _ -> UidM.update_or (SymConst.NonConst) (fun _-> SymConst.NonConst) u d
+end 
 
 (* The flow function across terminators is trivial: they never change const info *)
 let terminator_flow (t:terminator) (d:fact) : fact = d
@@ -62,9 +106,32 @@ module Fact =
 
     (* The constprop analysis should take the meet over predecessors to compute the
        flow into a node. You may find the UidM.merge function useful *)
-    let combine (ds:fact list) : fact = 
-      failwith "Constprop.Fact.combine unimplemented"
-  end
+       let join (s1:SymConst.t) (s2:SymConst.t) : SymConst.t =
+        match s1 with
+        |Const _ -> SymConst.UndefConst
+        |UndefConst -> begin match s2 with
+                  |NonConst -> s2
+                  |UndefConst -> s2
+                  |Const _ -> SymConst.UndefConst
+      end
+        |NonConst -> begin match s2 with
+                  |UndefConst -> s2
+                  |Const _-> SymConst.UndefConst
+                  |NonConst -> s2
+    end
+      let combine (ds:fact list) : fact =
+        let rec merge_list ds =
+          match ds with 
+          |[]-> UidM.empty
+          |[d]->d
+          |(d1::d2::tl)-> merge_list ((UidM.merge (fun str a b ->
+            match (a, b) with
+            | None, None -> None
+            | Some x, None -> Some x
+            | None, Some y -> Some y
+            | Some x, Some y -> Some (join x y))d1 d2)::tl)
+        in merge_list ds 
+    end
 
 (* instantiate the general framework ---------------------------------------- *)
 module Graph = Cfg.AsGraph (Fact)
