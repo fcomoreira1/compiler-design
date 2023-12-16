@@ -36,15 +36,25 @@ type fact = SymConst.t UidM.t
    - Uid of stores and void calls are UndefConst-out
    - Uid of all other instructions are NonConst-out
  *)
+ (* let print_cnd (c:cnd) : string = 
+  match c with
+  | Eq -> "eq"
+| Ne -> "Ne"
+| Slt->"slt"
+| Sle->"sle"
+| Sgt->"sgt"
+| Sge->"sge" *)
+
  let cnd_const (c1:int64)(c2:int64)(cnd:Ll.cnd)(u:uid)(d:fact)= 
  let cmp_res = (Int64.of_int(Int64.compare c1 c2)) in
+ let cmp_bool = (((Int64.compare cmp_res 0L)==0)) in 
  begin match cnd with
- |Eq -> UidM.update_or (SymConst.Const cmp_res) (fun _ -> SymConst.Const cmp_res) u d
- |Ne -> UidM.update_or (SymConst.Const (if cmp_res == 0L then 1L else 0L)) (fun _ -> SymConst.Const (if cmp_res==0L then 1L else 0L)) u d
- |Slt -> UidM.update_or (SymConst.Const (if cmp_res == -1L then 1L else 0L)) (fun _ -> SymConst.Const (if cmp_res== -1L then 1L else 0L)) u d
- |Sle -> UidM.update_or (SymConst.Const (if cmp_res == 1L then 1L else 0L)) (fun _ -> SymConst.Const (if cmp_res== 1L then 1L else 0L)) u d
- |Sgt ->UidM.update_or (SymConst.Const (if cmp_res == 1L then 0L else 1L)) (fun _ -> SymConst.Const (if cmp_res == 1L then 0L else 1L)) u d
- |Sge ->UidM.update_or (SymConst.Const (if cmp_res == -1L then -1L else 0L)) (fun _ -> SymConst.Const (if cmp_res == -1L then -1L else 0L)) u d
+ |Ne -> UidM.update_or (SymConst.Const (if cmp_bool then 0L else 1L)) (fun _ -> SymConst.Const (if cmp_bool then 0L else 1L)) u d
+ |Eq -> UidM.update_or (SymConst.Const (if cmp_bool then 1L else 0L)) (fun _ -> SymConst.Const (if cmp_bool then 1L else 0L)) u d
+ |Slt -> UidM.update_or (SymConst.Const (if ((Int64.compare cmp_res 0L)== -1) then 1L else 0L)) (fun _ -> SymConst.Const (if ((Int64.compare cmp_res 0L)== -1) then 1L else 0L)) u d
+ |Sle -> UidM.update_or (SymConst.Const (if ((Int64.compare cmp_res 0L)== 1) then 0L else 1L)) (fun _ -> SymConst.Const (if ((Int64.compare cmp_res 0L)== 1) then 0L else 1L)) u d
+ |Sgt ->UidM.update_or (SymConst.Const (if ((Int64.compare cmp_res 0L)== 1) then 1L else 0L)) (fun _ -> SymConst.Const (if ((Int64.compare cmp_res 0L)== 1) then 1L else 0L)) u d
+ |Sge ->UidM.update_or (SymConst.Const (if ((Int64.compare cmp_res 0L)== -1) then 0L else 1L)) (fun _ -> SymConst.Const (if ((Int64.compare cmp_res 0L)== -1) then 0L else 1L)) u d
 end
 
  let binop_const (c1 : int64) (c2 : int64) (bop : Ll.bop) (u : uid) (d : fact) : fact =
@@ -73,7 +83,7 @@ let insn_flow (u,i:uid * insn) (d:fact) : fact =
                   |NonConst -> UidM.update_or (SymConst.NonConst) (fun _-> SymConst.NonConst) u d
                   |UndefConst -> UidM.update_or (SymConst.UndefConst) (fun _-> SymConst.UndefConst) u d  
         end
-        |Gid i1, Gid i2 |Gid i1, Id i2 | Id i1, Gid i2 |Id i1, Id i2->begin  match (UidM.find i1 d, UidM.find i2 d) with 
+        |Gid i1, Gid i2 |Gid i1, Id i2 | Id i1, Gid i2 |Id i1, Id i2->begin  match (UidM.find_or (SymConst.UndefConst) d i1, UidM.find_or (SymConst.UndefConst) d i2 ) with 
                   |Const c1, Const c2 -> binop_const c1 c2 bop u d
                   |_->UidM.update_or (SymConst.NonConst) (fun _-> SymConst.NonConst) u d
   end 
@@ -87,7 +97,7 @@ end
 end
     |Const c1, Gid id |Const c1, Id id  -> begin match (UidM.find_or (SymConst.UndefConst) d id) with
           |Const c2 ->  cnd_const c1 c2 cnd u d
-    | _-> UidM.update_or (SymConst.UndefConst) (fun _-> SymConst.NonConst) u d
+          | _-> UidM.update_or (SymConst.UndefConst) (fun _-> SymConst.NonConst) u d
 end
     | Gid i1, Gid i2 |Id i1, Gid i2 | Gid i1, Id i2 |Id i1, Id i2->  UidM.update_or (SymConst.UndefConst) (fun _-> SymConst.NonConst) u d
    |_-> d )
