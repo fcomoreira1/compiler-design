@@ -36,6 +36,17 @@ type fact = SymConst.t UidM.t
    - Uid of stores and void calls are UndefConst-out
    - Uid of all other instructions are NonConst-out
  *)
+ let cnd_const (c1:int64)(c2:int64)(cnd:Ll.cnd)(u:uid)(d:fact)= 
+ let cmp_res = (Int64.of_int(Int64.compare c1 c2)) in
+ begin match cnd with
+ |Eq -> UidM.update_or (SymConst.Const cmp_res) (fun _ -> SymConst.Const cmp_res) u d
+ |Ne -> UidM.update_or (SymConst.Const (if cmp_res == 0L then 1L else 0L)) (fun _ -> SymConst.Const (if cmp_res==0L then 1L else 0L)) u d
+ |Slt -> UidM.update_or (SymConst.Const (if cmp_res == -1L then 1L else 0L)) (fun _ -> SymConst.Const (if cmp_res== -1L then 1L else 0L)) u d
+ |Sle -> UidM.update_or (SymConst.Const (if cmp_res == 1L then 1L else 0L)) (fun _ -> SymConst.Const (if cmp_res== 1L then 1L else 0L)) u d
+ |Sgt ->UidM.update_or (SymConst.Const (if cmp_res == 1L then 0L else 1L)) (fun _ -> SymConst.Const (if cmp_res == 1L then 0L else 1L)) u d
+ |Sge ->UidM.update_or (SymConst.Const (if cmp_res == -1L then -1L else 0L)) (fun _ -> SymConst.Const (if cmp_res == -1L then -1L else 0L)) u d
+end
+
  let binop_const (c1 : int64) (c2 : int64) (bop : Ll.bop) (u : uid) (d : fact) : fact =
   match bop with
   | Add -> UidM.update_or (SymConst.Const (Int64.add c1 c2)) (fun _ -> SymConst.Const (Int64.add c1 c2)) u d
@@ -44,7 +55,9 @@ type fact = SymConst.t UidM.t
   | Shl -> UidM.update_or (SymConst.Const (Int64.shift_left c1 (Int64.to_int c2))) (fun _ -> SymConst.Const(Int64.shift_left c1 (Int64.to_int c2))) u d
   | Lshr -> UidM.update_or (SymConst.Const (Int64.shift_right_logical c1 (Int64.to_int c2))) (fun _ -> SymConst.Const(Int64.shift_right_logical c1 (Int64.to_int c2))) u d
   | Ashr -> UidM.update_or (SymConst.Const (Int64.shift_right c1 (Int64.to_int c2))) (fun _ -> SymConst.Const(Int64.shift_right c1 (Int64.to_int c2))) u d
-  | And | Or | Xor -> UidM.update_or (SymConst.NonConst) (fun _ -> SymConst.NonConst) u d
+  | And -> UidM.update_or (SymConst.Const (Int64.logand c1 c2)) (fun _ -> SymConst.Const(Int64.logand c1 c2)) u d
+  | Or -> UidM.update_or (SymConst.Const (Int64.logor c1 c2)) (fun _ -> SymConst.Const(Int64.logor c1 c2)) u d
+  | Xor -> UidM.update_or (SymConst.Const (Int64.logxor c1 c2)) (fun _ -> SymConst.Const(Int64.logxor c1 c2)) u d
 
 let insn_flow (u,i:uid * insn) (d:fact) : fact =
   begin match i with
@@ -67,23 +80,18 @@ let insn_flow (u,i:uid * insn) (d:fact) : fact =
   |_-> d
 end
 | Icmp (cnd,_, o1, o2) -> (match o1, o2 with 
-    |Const c1, Const c2 ->  begin match cnd with
-                        | _-> UidM.update_or (SymConst.Const (Int64.of_int (Int64.compare c1 c2))) (fun _ -> SymConst.Const (Int64.of_int(Int64.compare c1 c2))) u d
-end
+    |Const c1, Const c2 ->  cnd_const c1 c2 cnd u d
     |Gid id, Const c2 |Id id, Const c2 -> begin match (UidM.find_or (SymConst.UndefConst) d id) with
-          |Const c1 ->  begin match cnd with
-                | _-> UidM.update_or (SymConst.Const (Int64.of_int (Int64.compare c1 c2))) (fun _ -> SymConst.Const (Int64.of_int(Int64.compare c1 c2))) u d
-end
-          |_-> UidM.update_or (SymConst.UndefConst) (fun _-> SymConst.UndefConst) u d
+          |Const c1 ->  cnd_const c1 c2 cnd u d 
+          |_-> UidM.update_or (SymConst.UndefConst) (fun _-> SymConst.NonConst) u d
 end
     |Const c1, Gid id |Const c1, Id id  -> begin match (UidM.find_or (SymConst.UndefConst) d id) with
-          |Const c2 ->  begin match cnd with
-                | _-> UidM.update_or (SymConst.Const (Int64.of_int (Int64.compare c1 c2))) (fun _ -> SymConst.Const (Int64.of_int(Int64.compare c1 c2))) u d
+          |Const c2 ->  cnd_const c1 c2 cnd u d
+    | _-> UidM.update_or (SymConst.UndefConst) (fun _-> SymConst.NonConst) u d
 end
-end
-    | Gid id, Gid id2->  d
+    | Gid i1, Gid i2 |Id i1, Gid i2 | Gid i1, Id i2 |Id i1, Id i2->  UidM.update_or (SymConst.UndefConst) (fun _-> SymConst.NonConst) u d
    |_-> d )
-| Store (_,o1,o2)-> UidM.update_or (SymConst.UndefConst) (fun _-> SymConst.UndefConst) u d
+| Store (_,o1,o2)-> d(* UidM.update_or (SymConst.UndefConst) (fun _-> SymConst.UndefConst) u d *)
 | _ -> UidM.update_or (SymConst.NonConst) (fun _-> SymConst.NonConst) u d
 end 
 
@@ -112,12 +120,13 @@ module Fact =
        flow into a node. You may find the UidM.merge function useful *)
        let join (s1:SymConst.t) (s2:SymConst.t) : SymConst.t =
         match s1 with
-        |Const _ -> SymConst.UndefConst
-        |UndefConst -> begin match s2 with
-                  |NonConst -> s2
-                  |UndefConst -> s2
-                  |Const _ -> SymConst.UndefConst
-      end
+        |Const c1 -> begin match s2 with
+                  |Const c2 -> if (c1==c2) then SymConst.Const c1 else SymConst.UndefConst
+                  |NonConst -> SymConst.UndefConst
+                  |UndefConst-> SymConst.UndefConst
+       end
+        |UndefConst -> SymConst.UndefConst
+      
         |NonConst -> begin match s2 with
                   |UndefConst -> s2
                   |Const _-> SymConst.UndefConst
