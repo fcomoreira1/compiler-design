@@ -713,24 +713,26 @@ module UidMap = Datastructures.UidM
 type graph_t = UidSet.t UidMap.t
 
 let better_layout (f : Ll.fdecl) (live : liveness) : layout =
-  print_endline "better_layout";
   let n_spill = ref 0 in
-  let live_in = live.live_in in
+  let live_out = live.live_out in
+
   let interference_graph : graph_t =
     let graph = ref UidMap.empty in
     let add_edge x y =
       let s = try UidMap.find x !graph with Not_found -> UidSet.empty in
       graph := UidMap.add x (UidSet.add y s) !graph
     in
-    let process_block { insns; _ } =
-      let process_insn (x, i) =
-        if insn_assigns i then
-          let live = live_in x in
-          UidSet.iter (fun a -> UidSet.iter (fun b -> if a <> b then add_edge a b) live) live
-      in
-      List.iter process_insn insns;
-    in
     let process_function f =
+      let process_block { insns; _ } =
+        let process_insn (x, i) =
+          if insn_assigns i then
+            let live = live_out x in
+            UidSet.iter
+              (fun a -> UidSet.iter (fun b -> if a <> b then add_edge a b) live)
+              live
+        in
+        List.iter process_insn insns
+      in
       let entry, bs = f.f_cfg in
       process_block entry;
       List.iter (fun (_, b) -> process_block b) bs
@@ -740,9 +742,39 @@ let better_layout (f : Ll.fdecl) (live : liveness) : layout =
   in
   let spill () =
     incr n_spill;
-    Alloc.LStk (- !n_spill) in
-  UidMap.iter (fun x _ -> Platform.verb @@ Printf.sprintf "interference: %s\n" x) interference_graph;
-  failwith "not_implemented"
+    Alloc.LStk (- !n_spill)
+  in
+
+  let rec reduce_graph (i_graph : graph_t) : (uid * Alloc.loc) list =
+    let min_v, s = UidMap.find_first (fun _ -> true) i_graph in
+    if UidMap.cardinal i_graph = 1 then [ (min_v, LocSet.find_first (fun _ -> true) caller_save) ]
+    else
+      let size = UidSet.cardinal s in
+      let k = LocSet.cardinal caller_save in
+      if k > size then (
+        let i_graph_n = UidMap.remove min_v i_graph in
+        let i_graph_n = UidMap.map (UidSet.remove min_v) i_graph_n in
+        let locs = reduce_graph i_graph_n in
+        let proh_loc = ref LocSet.empty in
+        UidSet.iter (fun v -> 
+          let n_loc = List.assoc v locs in
+          proh_loc := LocSet.add n_loc !proh_loc) s;
+        let available_loc = LocSet.diff caller_save !proh_loc in
+        (min_v, LocSet.find_first (fun _ -> true) available_loc) :: locs
+      )
+      else 
+        let max_v, s = UidMap.find_last (fun _ -> true) i_graph in
+        let i_graph = UidMap.remove max_v i_graph in
+        let i_graph = UidMap.map (UidSet.remove max_v) i_graph in
+        let locs = reduce_graph i_graph in
+        (min_v, spill ()) :: locs
+  in
+  (* UidMap.printer (fun _ s ->
+         (UidSet.to_string s) ^ "\n"
+     ) Format.std_formatter interference_graph; *)
+  let lo = reduce_graph interference_graph in
+  { uid_loc = (fun x -> List.assoc x lo); spill_bytes = 8 * !n_spill }
+
 
 (* register allocation options ---------------------------------------------- *)
 (* A trivial liveness analysis that conservatively says that every defined
