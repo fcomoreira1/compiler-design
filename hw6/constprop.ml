@@ -181,12 +181,12 @@ let analyze (g:Cfg.t) : Graph.t =
    functions.                                                                 *)
 let run (cg:Graph.t) (cfg:Cfg.t) : Cfg.t =
   let open SymConst in
-  
-
+  let flow_fact = ref UidM.empty in   
   let cp_block (l:Ll.lbl) (cfg:Cfg.t) : Cfg.t =
     let b = Cfg.block cfg l in
     let cb = Graph.uid_out cg l in
-    failwith "Constprop.cp_block unimplemented"
+    let new_block:= in 
+    {blocks = cfg.blocks ; preds = cfg.preds ; ret_ty = cfg.ret_ty;args= cfg.args}
   in
 
   LblS.fold cp_block (Cfg.nodes cfg) cfg
