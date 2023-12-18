@@ -600,7 +600,7 @@ let no_reg_layout (f : Ll.fdecl) (_ : liveness) : layout =
 *)
 
 let greedy_layout (f : Ll.fdecl) (live : liveness) : layout =
-  print_endline "greedy";
+  (* print_endline "greedy"; *)
   let n_arg = ref 0 in
   let n_spill = ref 0 in
 
@@ -714,24 +714,46 @@ type graph_t = UidSet.t UidMap.t
 
 let better_layout (f : Ll.fdecl) (live : liveness) : layout =
   let n_spill = ref 0 in
+  let n_arg = ref 0 in
   let live_out = live.live_out in
 
   let interference_graph : graph_t =
     let graph = ref UidMap.empty in
     let add_edge x y =
-      let s = try UidMap.find x !graph with Not_found -> UidSet.empty in
-      graph := UidMap.add x (UidSet.add y s) !graph
+      let s_x = try UidMap.find x !graph with Not_found -> UidSet.empty in
+      let s_y = try UidMap.find y !graph with Not_found -> UidSet.empty in
+      graph := UidMap.add x (UidSet.add y s_x) !graph;
+      graph := UidMap.add y (UidSet.add x s_y) !graph
     in
+    let add_node x =
+      let s = try UidMap.find x !graph with Not_found -> UidSet.empty in
+      graph := UidMap.add x s !graph
+    in
+    let add_args_graph () = List.iter (fun x -> add_node x) f.f_param in
+       add_args_graph ();
+    let process_uid (x : uid)  =
+      add_node x;
+      (* let live_o = live_out x in *)
+      let live_i = live.live_in x in
+      (* print_endline @@ "x:" ^ x ^ " " ^ UidSet.to_string live_i;
+         print_endline @@ "x:" ^ x ^ " " ^ UidSet.to_string live_o; *)
+      UidSet.iter (fun a -> if a <> x then add_edge a x) live_i;
+      UidSet.iter
+        (fun a -> UidSet.iter (fun b -> if a <> b then add_edge a b) live_i)
+        live_i
+    in
+    let process_insn (x: uid) (i: insn) = 
+      if insn_assigns i then
+        let () = process_uid x in
+        match i with 
+        | Binop (_, _, _, _) -> ()
+        | _ -> ()
+    in
+
     let process_function f =
-      let process_block { insns; _ } =
-        let process_insn (x, i) =
-          if insn_assigns i then
-            let live = live_out x in
-            UidSet.iter
-              (fun a -> UidSet.iter (fun b -> if a <> b then add_edge a b) live)
-              live
-        in
-        List.iter process_insn insns
+      let process_block { insns; term } =
+        List.iter (fun (x, i) ->  process_insn x i) insns;
+        process_uid (fst term)
       in
       let entry, bs = f.f_cfg in
       process_block entry;
@@ -740,41 +762,109 @@ let better_layout (f : Ll.fdecl) (live : liveness) : layout =
     process_function f;
     !graph
   in
+  (* UidMap.printer
+     (fun _ s -> UidSet.to_string s ^ "\n")
+     Format.std_formatter interference_graph; *)
+  (* let entry_block = (f.f_cfg |> fst).term |> fst in
+     print_endline @@ "Debug: " ^ entry_block ^ UidSet.to_string (live.live_out entry_block); *)
   let spill () =
     incr n_spill;
     Alloc.LStk (- !n_spill)
   in
-
-  let rec reduce_graph (i_graph : graph_t) : (uid * Alloc.loc) list =
-    let min_v, s = UidMap.find_first (fun _ -> true) i_graph in
-    if UidMap.cardinal i_graph = 1 then [ (min_v, LocSet.find_first (fun _ -> true) caller_save) ]
-    else
-      let size = UidSet.cardinal s in
-      let k = LocSet.cardinal caller_save in
-      if k > size then (
-        let i_graph_n = UidMap.remove min_v i_graph in
-        let i_graph_n = UidMap.map (UidSet.remove min_v) i_graph_n in
-        let locs = reduce_graph i_graph_n in
-        let proh_loc = ref LocSet.empty in
-        UidSet.iter (fun v -> 
-          let n_loc = List.assoc v locs in
-          proh_loc := LocSet.add n_loc !proh_loc) s;
-        let available_loc = LocSet.diff caller_save !proh_loc in
-        (min_v, LocSet.find_first (fun _ -> true) available_loc) :: locs
-      )
-      else 
-        let max_v, s = UidMap.find_last (fun _ -> true) i_graph in
-        let i_graph = UidMap.remove max_v i_graph in
-        let i_graph = UidMap.map (UidSet.remove max_v) i_graph in
-        let locs = reduce_graph i_graph in
-        (min_v, spill ()) :: locs
+  let available_regs =
+    LocSet.(caller_save |> remove (Alloc.LReg Rax) |> remove (Alloc.LReg Rcx))
   in
-  (* UidMap.printer (fun _ s ->
-         (UidSet.to_string s) ^ "\n"
-     ) Format.std_formatter interference_graph; *)
-  let lo = reduce_graph interference_graph in
-  { uid_loc = (fun x -> List.assoc x lo); spill_bytes = 8 * !n_spill }
 
+  let rec reduce_graph (i_graph : graph_t) (locs : (uid * Alloc.loc) list) :
+      (uid * Alloc.loc) list =
+    (* print_string "Sizes -> ";
+    print_int @@ UidMap.cardinal i_graph;
+    print_string " ";
+    print_int @@ List.length locs;
+    print_endline ""; *)
+    if (UidMap.cardinal i_graph) = (List.length locs) then
+      (* let () = print_endline "found_coloring" in *)
+      locs
+    else
+      (* let () = print_endline "Picking first element" in *)
+      let min_v, s = ref "", ref UidSet.empty in
+      UidMap.iter (fun x s_x -> if !min_v = "" then if not (List.mem_assoc x locs) then (s := s_x; min_v := x)) i_graph;
+      (* print_endline @@ "min_v: " ^ !min_v;
+      print_endline @@ "s: " ^ UidSet.to_string !s; *)
+      let size = UidSet.cardinal !s in
+      let k = LocSet.cardinal available_regs in
+      if k > size then (
+        let i_graph_n = UidMap.remove !min_v i_graph in
+        let i_graph_n = UidMap.map (UidSet.remove !min_v) i_graph_n in
+        let locs = (reduce_graph i_graph_n locs) in
+        let proh_loc = ref LocSet.empty in
+        UidSet.iter
+          (fun v ->
+            let n_loc = List.assoc v locs in
+            proh_loc := LocSet.add n_loc !proh_loc)
+          !s;
+        let available_loc = LocSet.diff available_regs !proh_loc in
+        let () =
+          if LocSet.cardinal available_loc = 0 then
+            failwith "Unexpeceted: should have available reg"
+        in
+        (!min_v, LocSet.find_first (fun _ -> true) available_loc) :: locs)
+      else
+        let max_v = ref "" in
+        UidMap.iter (fun x _ -> if not (List.mem_assoc x locs) then (max_v := x)) i_graph;
+        let i_graph = UidMap.remove !max_v i_graph in
+        let i_graph = UidMap.map (UidSet.remove !max_v) i_graph in
+        let locs = reduce_graph i_graph locs in
+        (!max_v, spill ()) :: locs
+  in
+  let alloc_arg () =
+    let res = match arg_loc !n_arg with Alloc.LReg Rcx -> spill () | x -> x in
+    incr n_arg;
+    res
+  in
+  let args_loc = List.map (fun x -> (x, alloc_arg ())) f.f_param in
+  (* let precolor_rets = 
+    let block_handle (l, b: lbl * block) =  
+      let _, t = b.term in
+      match t with 
+      | Ret (_, (Some op)) -> (
+          match op with
+          | Id id | Gid id -> [id, Alloc.LReg Rax]
+          | _ -> []
+        )
+      | _ -> []
+    in
+    block_handle ("", (f.f_cfg |> fst)) @ List.concat_map block_handle (f.f_cfg |> snd)
+  in *)
+  (* let () =
+       List.iter
+         (fun (lbl, loc) -> print_endline @@ lbl ^ " -> " ^ Alloc.str_loc loc)
+        (args_loc @ precolor_rets)
+     in *)
+  let coloring = reduce_graph interference_graph (args_loc) in
+  (* print_endline "colored"; *)
+  (* let () =
+       List.iter
+         (fun (lbl, loc) -> print_endline @@ lbl ^ " -> " ^ Alloc.str_loc loc)
+         coloring
+     in *)
+  let lo =
+    fold_fdecl
+      (fun lo (x, _) ->
+        (x, try List.assoc x coloring with Not_found -> Alloc.LVoid) :: lo)
+      (fun lo l -> (l, Alloc.LLbl (Platform.mangle l)) :: lo)
+      (fun lo (x, i) ->
+        if insn_assigns i then (x, List.assoc x coloring) :: lo
+        else (x, Alloc.LVoid) :: lo)
+      (fun lo _ -> lo)
+      [] f
+  in
+  {
+    uid_loc =
+      (fun x ->
+        List.assoc x lo);
+    spill_bytes = 8 * !n_spill;
+  }
 
 (* register allocation options ---------------------------------------------- *)
 (* A trivial liveness analysis that conservatively says that every defined
