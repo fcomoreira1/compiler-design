@@ -756,9 +756,9 @@ let better_layout (f : Ll.fdecl) (live : liveness) : layout =
     process_function f;
     !graph
   in
-  UidMap.printer
+  (* UidMap.printer
      (fun _ s -> UidSet.to_string s ^ "\n")
-     Format.std_formatter interference_graph;
+     Format.std_formatter interference_graph; *)
   (* let entry_block = (f.f_cfg |> fst).term |> fst in
      print_endline @@ "Debug: " ^ entry_block ^ UidSet.to_string (live.live_out entry_block); *)
   let spill () =
@@ -837,11 +837,11 @@ let better_layout (f : Ll.fdecl) (live : liveness) : layout =
      in *)
   let coloring = reduce_graph interference_graph (args_loc @ precolor_rets) in
   (* print_endline "colored"; *)
-  let () =
+  (* let () =
        List.iter
          (fun (lbl, loc) -> print_endline @@ lbl ^ " -> " ^ Alloc.str_loc loc)
          coloring
-     in
+     in *)
   let lo =
     fold_fdecl
       (fun lo (x, _) ->
