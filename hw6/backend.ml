@@ -732,35 +732,18 @@ let better_layout (f : Ll.fdecl) (live : liveness) : layout =
     let add_args_graph () = List.iter (fun x -> add_node x) f.f_param in
        add_args_graph ();
     let process_uid (x : uid)  =
-      add_node x;
-      (* let live_o = live_out x in *)
       let live_i = live.live_in x in
-      (* print_endline @@ "x:" ^ x ^ " " ^ UidSet.to_string live_i;
-         print_endline @@ "x:" ^ x ^ " " ^ UidSet.to_string live_o; *)
-      (* UidSet.iter (fun a -> if a <> x then add_edge a x) live_i; *)
       UidSet.iter
         (fun a -> UidSet.iter (fun b -> if a <> b then add_edge a b) live_i)
         live_i
     in
     let process_insn (x: uid) (i: insn) = 
-      let () = match i with 
-      | Load (_, op) -> (
-          match op with
-          | Id id | Gid id -> add_edge x id
-          | _ -> ()
-          )
-      | Store (_, op1, op2) -> (
-          match op1 with
-          | Id id | Gid id -> (
-              match op2 with
-          | Id id1 | Gid id1 -> add_edge id id1
-              | _ -> ()
-          ) 
-          | _ -> ())
-      | _ -> () in
-      if insn_assigns i then process_uid x
+      if insn_assigns i then 
+        add_node x;
+        process_uid x;
+        let used = UidSet.diff (live.live_in x) (live.live_out x) in
+        UidSet.iter (fun a -> add_edge x a) used
     in
-
     let process_function f =
       let process_block { insns; term } =
         List.iter (fun (x, i) ->  process_insn x i) insns;
@@ -834,25 +817,25 @@ let better_layout (f : Ll.fdecl) (live : liveness) : layout =
     res
   in
   let args_loc = List.map (fun x -> (x, alloc_arg ())) f.f_param in
-  (* let precolor_rets = 
+  let precolor_rets = 
     let block_handle (l, b: lbl * block) =  
       let _, t = b.term in
       match t with 
       | Ret (_, (Some op)) -> (
           match op with
-          | Id id | Gid id -> [id, Alloc.LReg Rax]
+        | Id id | Gid id -> if not (List.mem_assoc id args_loc) then [id, Alloc.LReg Rax] else []
           | _ -> []
         )
       | _ -> []
     in
     block_handle ("", (f.f_cfg |> fst)) @ List.concat_map block_handle (f.f_cfg |> snd)
-  in *)
+  in
   (* let () =
        List.iter
          (fun (lbl, loc) -> print_endline @@ lbl ^ " -> " ^ Alloc.str_loc loc)
         (args_loc @ precolor_rets)
      in *)
-  let coloring = reduce_graph interference_graph (args_loc) in
+  let coloring = reduce_graph interference_graph (args_loc @ precolor_rets) in
   (* print_endline "colored"; *)
   let () =
        List.iter
